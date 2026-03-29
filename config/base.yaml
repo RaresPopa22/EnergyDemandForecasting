@@ -1,0 +1,5 @@
+data_paths:
+  raw_data:
+    dir: 'data/raw'
+    country: 'RO'
+    columns_to_drop: ['MeasureItem', 'CreateDate', 'UpdateDate', 'CountryCode', 'DateShort', 'TimeFrom', 'TimeTo', 'Cov_ratio', 'Value_ScaleTo100']
