@@ -1,16 +1,22 @@
-from io import StringIO
+import argparse
 import logging
-from pathlib import Path
 import time
-
 import pandas as pd
 import requests
+import openmeteo_requests
+import requests_cache
+from retry_requests import retry
+
+
+from pathlib import Path
+from io import StringIO
 
 from src.utils import read_config
 
 logger = logging.getLogger(__name__)
 
-def fetch_data(config):
+
+def fetch_energy_data(config):
     start_year = 2019
     end_year = 2025
     raw_data_config = config['data_paths']['raw_data']
@@ -43,10 +49,56 @@ def fetch_data(config):
 
     df = pd.concat(data, axis=0)
     df.to_csv(output_file_path, index=False)
+
+
+def fetch_temp_data(config):
+    raw_data_config = config['data_paths']['raw_data']
+    output_file_path = Path(raw_data_config['dir']) / f"{raw_data_config['country']}_temperature_statistic.csv"
+    cache_session = requests_cache.CachedSession('.cache', expire_after='-1')
+    retry_session = retry(cache_session, retries=5, backoff_factor=.2)
+    openmeteo = openmeteo_requests.Client(session = retry_session)
+
+    url = 'https://archive-api.open-meteo.com/v1/archive'
+    params = {
+        "latitude": 44.4323,
+        "longitude": 26.1063,
+        "start_date": "2019-01-01",
+        "end_date": "2025-12-31",
+        "hourly": "temperature_2m",
+    }
+
+    responses = openmeteo.weather_api(url, params = params)
+    response = responses[0]
+    logger.info(f'Coordinates: {response.Latitude()}°N {response.Longitude()}°E')
+    logger.info(f'Elevation: {response.Elevation()} m asl')
+    logger.info(f'Timezone difference to GMT+0: {response.UtcOffsetSeconds()}s')
+
+    hourly = response.Hourly()
+    hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
+    hourly_data = {'DateUTC': pd.date_range(
+        start=pd.to_datetime(hourly.Time(), unit='s', utc=True),
+        end=pd.to_datetime(hourly.TimeEnd(), unit='s', utc=True),
+        freq=pd.Timedelta(seconds=hourly.Interval()),
+        inclusive='left'
+    )}
+
+    hourly_data['temperature_2m'] = hourly_temperature_2m
+    hourly_dataframe = pd.DataFrame(data=hourly_data)
+    hourly_dataframe.to_csv(output_file_path, index=False)
     
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Dataset type to download: 'energy' or 'temperature'")
+    parser.add_argument('--type', required=True, help='Types of dataset to download')
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO)
     base_path = Path(__file__).parent.parent / 'config' / 'base.yaml'
     config = read_config(base_path)
-    fetch_data(config)
+
+    if args.type == 'energy':
+        fetch_energy_data(config)
+    elif args.type == 'temp':
+        fetch_temp_data(config)
+    else:
+        raise ValueError(f'Unknown required type. Available: energy, temp. Requested: {args.type}')
