@@ -1,0 +1,28 @@
+data_paths:
+  model: 'models/lstm.pt'
+  scaler: 'models/scaler.joblib'
+  target_scaler: 'models/target_scaler.joblib'
+  test_data: 'models/test_data.joblib'
+
+data:
+  split:
+    test_size: .15
+    eval_size: .15
+
+hyperparams:
+  epochs: 1000
+  patience: 50
+  lookback: 24
+  forecast_horizon: 1
+  batch_size: 512
+  input_size: 11
+  hidden_size: 75
+  dropout: .2
+  num_layers: 1
+  batch_first: True
+  num_workers: 0
+  weight_decay: .00001
+  lr: .001
+  T_max: 200
+  eta_min: .00001
+  max_norm: 1

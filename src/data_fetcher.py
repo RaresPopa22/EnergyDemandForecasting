@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 def fetch_energy_data(config):
     start_year = 2019
     end_year = 2025
-    raw_data_config = config['data_paths']['raw_data']
-    output_file_path = Path(raw_data_config['dir']) / f"{raw_data_config['country']}_power_statistic.csv"
+    preprocessed_data_config = config['data_paths']['preprocessed']
+    energy_csv_name = preprocessed_data_config['energy']
+    output_file_path = Path(__file__).parent.parent / energy_csv_name
 
     semicolon_years = [2021, 2022]
 
@@ -33,28 +34,32 @@ def fetch_energy_data(config):
         response = requests.get(link)
 
         if response.status_code == 200:
-            logger.info(f'Got successful response. Saving the data as {year}.csv')
+            logger.info(f'Got successful response for year={year}')
             decoded_content = response.content.decode('utf-8')
             csv_delimiter = ';' if year in semicolon_years else '\t'
             df = pd.read_csv(StringIO(decoded_content), delimiter=csv_delimiter, parse_dates=['DateUTC'], dayfirst=True)
-            df = df[df['CountryCode'] == raw_data_config['country']]
-            df = df.drop(raw_data_config['columns_to_drop'], axis=1, errors='ignore')
+            df = df[df['CountryCode'] == preprocessed_data_config['country']]
+            df = df.drop(preprocessed_data_config['columns_to_drop'], axis=1, errors='ignore')
             df['DateUTC'] = df['DateUTC'].dt.strftime("%d-%m-%Y %H:%M")
             data.append(df)
+            logger.info('Done.')
         else:
             logger.info(f'Something went wrong, {response.status_code}')
 
-        logger.info('Done.')
         time.sleep(1)
 
     df = pd.concat(data, axis=0)
+    
+    if df.empty:
+        raise ValueError(f'Something went wrong. Empty dataframe.')    
+
     df.to_csv(output_file_path, index=False)
 
 
 def fetch_temp_data(config):
-    raw_data_config = config['data_paths']['raw_data']
-    output_file_path = Path(raw_data_config['dir']) / f"{raw_data_config['country']}_temperature_statistic.csv"
-    cache_session = requests_cache.CachedSession('.cache', expire_after='-1')
+    temp_csv_name = config['data_paths']['preprocessed']['temp']
+    output_file_path = Path(__file__).parent.parent / temp_csv_name
+    cache_session = requests_cache.CachedSession('.cache', expire_after=-1)
     retry_session = retry(cache_session, retries=5, backoff_factor=.2)
     openmeteo = openmeteo_requests.Client(session = retry_session)
 
