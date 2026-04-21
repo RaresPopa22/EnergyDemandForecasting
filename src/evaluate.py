@@ -1,11 +1,16 @@
 import argparse
+from datetime import timedelta
 import logging
 from pathlib import Path
 
+import holidays
 import joblib
-from matplotlib import pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
+import pandas as pd
 import torch
+
+from matplotlib import pyplot as plt
 from torch import nn
 
 from src.data_processing import get_data_loader
@@ -15,6 +20,132 @@ from src.utils import read_configs, setup_device
 
 logger = logging.getLogger(__name__)
 device = setup_device()
+
+
+def get_skill_score(config, hours, y_test, valid_segments, model_loss):
+    diffs_per_segment = []
+    window_total = config['hyperparams']['lookback'] + config['hyperparams']['forecast_horizon']
+    entry_counts = [segment - window_total + 1 for segment in valid_segments]
+    start_offsets = np.concatenate([[0], np.cumsum(entry_counts)[:-1]])
+
+    for offset, length in zip(start_offsets, entry_counts):
+        y_t_idxs = range(offset + hours, offset + length)
+        y_t_1_idxs = range(offset, offset + length-hours)
+        diffs_per_segment.append(y_test[y_t_idxs] - y_test[y_t_1_idxs])
+
+    diffs = np.concatenate(diffs_per_segment).squeeze()
+    persistence_rmse = np.sqrt(np.mean(diffs ** 2))
+    return model_loss / persistence_rmse
+
+
+def log_metrics(config, y_test, y_pred, test_segments, mwh_rmse_loss):
+    mae = np.mean(np.abs(y_test - y_pred))
+    mape = np.mean(np.abs(y_test - y_pred) / np.abs(y_test)) * 100
+    r2 = 1 - np.mean((y_test - y_pred) ** 2) / np.var(y_test)
+    lag1h = get_skill_score(config, 1, y_test, test_segments, mwh_rmse_loss)
+    lag24h = get_skill_score(config, 24, y_test, test_segments, mwh_rmse_loss)
+    
+    logger.info(f'RMSE error={mwh_rmse_loss.item():.3f}MWh')
+    logger.info(f'MAE:{mae:.3f}MWh')
+    logger.info(f'MAPE:{mape:.3f}%')
+    logger.info(f'R2:{r2:.3f}')
+    logger.info(f'Skill score for 1h is: {lag1h.item():.3f}')
+    logger.info(f'Skill score for 24h is: {lag24h.item():.3f}')
+
+
+def plot_overall_result(dates, y_test, y_pred):
+    plt.figure(figsize=(8, 8))
+    plt.plot(dates, y_test, label='expected', c='g')
+    plt.plot(dates, y_pred, label='predicted', c='r')
+    plt.xlabel('Time')
+    plt.ylabel('Value')
+    plt.title('Expected vs Predicted')
+    plt.legend()
+    plt.savefig('outputs/evaluation_overall.png')
+    plt.close()
+
+
+def get_middle_segment_week(valid_segments):
+    start = 0
+    start_offsets = np.concatenate([[0], np.cumsum(valid_segments)[:-1]])
+    
+    for segment_start, segment in zip(start_offsets, valid_segments):
+        if segment > 2 * 168:
+            start = segment_start + segment // 2
+            break
+
+    end = start + 168
+
+    return start, end
+
+
+def get_worst_week_start(y_test, y_pred, valid_segments):
+    window_total = config['hyperparams']['lookback'] + config['hyperparams']['forecast_horizon']
+    entry_counts = [segment - window_total + 1 for segment in valid_segments]
+    start_offsets = np.concatenate([[0], np.cumsum(entry_counts)[:-1]])
+    weekly_data = []
+
+    for offset, segment in zip(start_offsets, entry_counts):
+        weeks = segment // 168
+        length = weeks * 168
+        for i in range(offset, offset + length, 168):
+            mae = np.mean(np.abs(y_test[i:i+168] - y_pred[i:i+168]))
+            weekly_data.append((mae, i))
+
+    max_week = np.argmax(weekly_data, axis=0)
+    _, worst_start = weekly_data[max_week[0]]
+
+    return worst_start
+
+
+def get_holiday_week_mask(dates,):
+    year = pd.DatetimeIndex(dates).year.unique()
+    ro_holidays = holidays.country_holidays('RO', years=year)
+    holiday = ro_holidays.get_named('Christmas')[0]
+    start = holiday - timedelta(days=3)
+    end = holiday + timedelta(days=3)
+    dates_mask = (dates.dt.date >= start) & (dates.dt.date <= end)
+
+    return dates_mask
+    
+
+def plot_week_data(dates, y_test, y_pred, valid_segments):
+    fig, axs = plt.subplots(3, figsize=(8, 8))
+
+    start, end = get_middle_segment_week(valid_segments)
+    worst_start = get_worst_week_start(y_test, y_pred, valid_segments)
+    holidays_mask = get_holiday_week_mask(dates)
+
+    y_test_week = y_test[start:end]
+    y_pred_week = y_pred[start:end]
+    dates_week = dates[start:end]
+
+    fig.tight_layout()
+    axs[0].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
+    axs[0].plot(dates_week, y_test_week)
+    axs[0].plot(dates_week, y_pred_week)
+    axs[0].set_title('Weekly data')
+
+    y_test_worst_week = y_test[worst_start: worst_start + 168]
+    y_pred_worst_week = y_pred[worst_start: worst_start + 168]
+    dates_worst_week = dates[worst_start: worst_start + 168]
+
+    axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
+    axs[1].plot(dates_worst_week, y_test_worst_week)
+    axs[1].plot(dates_worst_week, y_pred_worst_week)
+    axs[1].set_title('Worst Week')
+
+    y_test_holiday = y_test[holidays_mask]
+    y_pred_holiday = y_pred[holidays_mask]
+    dates_holiday = dates[holidays_mask]
+
+    axs[2].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
+    axs[2].plot(dates_holiday, y_test_holiday)
+    axs[2].plot(dates_holiday, y_pred_holiday)
+    axs[2].set_title('Holiday Week')
+
+    plt.savefig('outputs/evaluation_weekly.png')
+    plt.close()
 
 
 def evaluate(config):
@@ -40,13 +171,13 @@ def evaluate(config):
             y_batch = y_batch.to(device)
             hypothesis = model(X_batch)
             loss = loss_fn(hypothesis, y_batch)
-            test_loss += loss.data * X_batch.shape[0]
+            test_loss += loss.item() * X_batch.shape[0]
 
             predictions.append(hypothesis)
             labels_y.append(y_batch)
 
-    scaled_rmse_loss = np.sqrt(test_loss.item() / len(test_loader.dataset))
-    logger.info(f'Test loss={scaled_rmse_loss:.3f}')
+    scaled_rmse_loss = np.sqrt(test_loss / len(test_loader.dataset))
+    logger.info(f'RMSE={scaled_rmse_loss:.3f}')
 
     y_test = torch.cat(labels_y).cpu().numpy()
     y_pred = torch.cat(predictions).cpu().numpy()
@@ -54,32 +185,11 @@ def evaluate(config):
     y_test = target_scaler.inverse_transform(y_test)
     y_pred = target_scaler.inverse_transform(y_pred)
     mwh_rmse_loss = target_scaler.scale_ * scaled_rmse_loss
-    logger.info(f'Test loss, re-scaled={mwh_rmse_loss.item():.3f}MWh')
 
-    labels_y_hat_t = []
-    window_total = config['hyperparams']['lookback'] + config['hyperparams']['forecast_horizon']
-    entry_counts = [segment - window_total + 1 for segment in test_data[2]]
-    start_offsets = np.concatenate([[0], np.cumsum(entry_counts)[:-1]])
-
-    for offset, length in zip(start_offsets, entry_counts):
-        y_t_idxs = range(offset + 1, offset + length)
-        y_t_1_idxs = range(offset, offset + length-1)
-        labels_y_hat_t.append(y_test[y_t_idxs] - y_test[y_t_1_idxs])
-
-    diffs = np.concatenate(labels_y_hat_t).squeeze()
-    persistence_rmse = np.sqrt(np.mean(diffs ** 2))
-    skill_score = mwh_rmse_loss / persistence_rmse
-    logger.info(f'Skill score is: {skill_score.item()}')
+    log_metrics(config, y_test, y_pred, test_data[2], mwh_rmse_loss)
     
-    plt.figure(figsize=(8, 8))
-    plt.plot(y_test, label='expected', c='g')
-    plt.plot(y_pred, label='predicted', c='r')
-    plt.xlabel('Time')
-    plt.ylabel('Value')
-    plt.title('Expected vs Predicted')
-    plt.legend()
-    plt.savefig('outputs/evaluation.png')
-    plt.close()
+    plot_overall_result(test_data[3], y_test, y_pred)
+    plot_week_data(test_data[3], y_test, y_pred, test_data[2])
 
 
 if __name__ == '__main__':

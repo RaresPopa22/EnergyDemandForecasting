@@ -99,13 +99,15 @@ def process_df(config):
     df = get_df(config)
     df, segment_lengths = segment_dataframe(config, df)
     feature_engineer(df)
+    date_utc = df['DateUTC']
+
     df= df.drop('DateUTC', axis=1)
 
-    return df, segment_lengths
+    return df, segment_lengths, date_utc
 
 
 def get_train_eval_test_df(config):
-    df, segment_lengths = process_df(config)
+    df, segment_lengths, date_utc = process_df(config)
     X = df.drop('Value', axis=1)
     y= df[['Value']]
 
@@ -142,6 +144,8 @@ def get_train_eval_test_df(config):
 
     test_slice_start, test_slice_end = test_slices[0][0], test_slices[-1][1]
     X_test, y_test = X.iloc[test_slice_start: test_slice_end], y.iloc[test_slice_start: test_slice_end]
+    date_utc_test = [date_utc[start + config['hyperparams']['lookback']:end] for start, end in test_slices]
+    date_utc_test = pd.concat(date_utc_test)
     test_segment_lengths = [stop - start for start, stop in test_slices]
 
     scaler = MinMaxScaler()
@@ -160,16 +164,15 @@ def get_train_eval_test_df(config):
 
     train_tuple = (X_train, y_train.squeeze(), train_segment_lengths)
     eval_tuple = (X_eval, y_eval.squeeze(), eval_segment_lengths)
-    test_tuple = (X_test, y_test.squeeze(), test_segment_lengths)
+    test_tuple = (X_test, y_test.squeeze(), test_segment_lengths, date_utc_test)
 
     return train_tuple, eval_tuple, test_tuple, scaler, target_scaler
 
 
 def get_data_loader(config, data_tuple):
-    X, y, segment_lengths = data_tuple
     batch_size = config['hyperparams']['batch_size']
     lookback = config['hyperparams']['lookback']
     forecast_horizon = config['hyperparams']['forecast_horizon']
 
-    custom_dataset = CustomDataset(X, y, lookback, segment_lengths, forecast_horizon)
+    custom_dataset = CustomDataset(data_tuple[0], data_tuple[1], lookback, data_tuple[2], forecast_horizon)
     return DataLoader(custom_dataset, batch_size, num_workers=config['hyperparams']['num_workers'])
