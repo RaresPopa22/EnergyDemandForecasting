@@ -1,3 +1,6 @@
+import os
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:2'
+
 import argparse
 import logging
 import joblib
@@ -14,11 +17,22 @@ from torch import nn
 
 from src.data_processing import get_data_loader, get_train_eval_test_df
 from src.model import EnergyModel
-from src.utils import read_configs, setup_device
+from src.utils import read_configs, set_random_seeds, setup_device
 
 
 logger = logging.getLogger(__name__)
-device = setup_device()
+
+
+def plot_learning_curve(training_loss, eval_loss, best_eval_idx):
+    plt.figure(figsize=(8, 8))
+    plt.plot(training_loss, c='b', label='training')
+    plt.plot(eval_loss, c='orange', label='eval')
+    plt.axvline(best_eval_idx, c='r', label='saved checkpoint')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Learning curve')
+    plt.legend()
+    plt.savefig(f'outputs/learning_curve.png')
 
 
 def train(config):
@@ -93,14 +107,9 @@ def train(config):
     joblib.dump(scaler, config['data_paths']['scaler'])
     joblib.dump(target_scaler, config['data_paths']['target_scaler'])
 
-    plt.figure(figsize=(8, 8))
-    plt.plot(training_avg_loss, label='training')
-    plt.plot(eval_avg_loss, label='eval')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Learning curve')
-    plt.legend(['training', 'eval'])
-    plt.savefig(f'outputs/learning_curve.png')
+
+    best_eval_idx = np.argmin(eval_avg_loss)
+    plot_learning_curve(training_avg_loss, eval_avg_loss, best_eval_idx)
 
 
 if __name__ == '__main__':
@@ -111,4 +120,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     base_path = Path(__file__).parent.parent / 'config' / 'base.yaml'
     config = read_configs(base_path, args.config)
+    set_random_seeds(config)
+    device = setup_device()
+
     train(config)

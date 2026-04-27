@@ -26,3 +26,6 @@ hyperparams:
   T_max: 200
   eta_min: .00001
   max_norm: 1
+
+plot:
+  window: 168

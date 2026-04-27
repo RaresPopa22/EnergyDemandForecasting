@@ -4,3 +4,8 @@ data_paths:
     columns_to_drop: ['MeasureItem', 'CreateDate', 'UpdateDate', 'CountryCode', 'DateShort', 'TimeFrom', 'TimeTo', 'Cov_ratio', 'Value_ScaleTo100']
     energy: 'data/processed/RO_power_statistic.csv'
     temp: 'data/processed/RO_temperature_statistic.csv'
+
+seed: 1
+
+naive:
+  m: 168

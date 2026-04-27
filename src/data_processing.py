@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+import random
 
 import holidays
 import numpy as np
@@ -77,6 +78,8 @@ def feature_engineer(df):
     date_max_value = (df['DateUTC'].max() - date_min).total_seconds()
 
     df['trend'] = (df['DateUTC'] - date_min).dt.total_seconds() / date_max_value
+
+    return df
     
 
 def segment_dataframe(config, df):
@@ -98,7 +101,7 @@ def segment_dataframe(config, df):
 def process_df(config):
     df = get_df(config)
     df, segment_lengths = segment_dataframe(config, df)
-    feature_engineer(df)
+    df = feature_engineer(df)
     date_utc = df['DateUTC']
 
     df= df.drop('DateUTC', axis=1)
@@ -175,4 +178,9 @@ def get_data_loader(config, data_tuple):
     forecast_horizon = config['hyperparams']['forecast_horizon']
 
     custom_dataset = CustomDataset(data_tuple[0], data_tuple[1], lookback, data_tuple[2], forecast_horizon)
-    return DataLoader(custom_dataset, batch_size, num_workers=config['hyperparams']['num_workers'])
+
+    return DataLoader(
+        custom_dataset, 
+        batch_size,
+        num_workers=config['hyperparams']['num_workers']
+        )

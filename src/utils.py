@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import yaml
 
@@ -30,8 +31,16 @@ def read_configs(base, override):
 
 def setup_device():
     if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = False
         return torch.device('cuda')
     elif torch.backends.mps.is_available():
         return torch.device('mps')
     else:
         return torch.device('cpu')
+    
+
+def set_random_seeds(config):
+    seed = config['seed']
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
