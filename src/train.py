@@ -40,7 +40,7 @@ def train(config):
     train_tuple, eval_tuple, test_tuple, scaler, target_scaler = get_train_eval_test_df(config)
     train_loader = get_data_loader(config, train_tuple)
     eval_loader = get_data_loader(config, eval_tuple)
-    model = EnergyModel(config).to(device)
+    model = EnergyModel(config, train_tuple[0].shape[1]).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=hparam_config['lr'], weight_decay=hparam_config['weight_decay'])
     lr_scheduler = CosineAnnealingLR(optimizer, T_max=hparam_config['T_max'], eta_min=hparam_config['eta_min'])
     loss_fn = nn.MSELoss()

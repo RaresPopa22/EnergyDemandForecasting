@@ -1,2 +1,6 @@
 .venv
 src/__pycache__
+.DS_Store
+.cache.sqlite
+models/
+data/

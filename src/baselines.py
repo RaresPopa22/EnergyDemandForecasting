@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 class NaiveSeasonalForecast():
     def __init__(self, config, segments):
@@ -16,18 +17,18 @@ class NaiveSeasonalForecast():
                 y_temp = np.array([[np.nan] * self.forecast] * (length - self.forecast + 1))
                 y_pred.extend(y_temp[self.lookback:])
                 continue
-
-            y_temp = []
-            starting_length = length
-            for i in range(self.lookback, length - self.forecast + 1):
-                if i - self.m < 0:
-                    y_temp.append(np.array([np.nan] * self.forecast))
-                    starting_length -= 1
-                    continue
-
-                y_temp.append(y[start + i - self.m : start + i - self.m + self.forecast])
             
-            y_pred.extend(y_temp)
+            view_end = start + length - self.m
+            if self.lookback < self.m:
+                view_start = start
+                warm_up = np.full((self.m - self.lookback, self.forecast), np.nan)
+                y_view = np.concat((warm_up, sliding_window_view(y[view_start:view_end], self.forecast)), axis=0)
+            else:
+                view_start = start + self.lookback - self.m
+                y_view = sliding_window_view(y[view_start:view_end], self.forecast)
+
+            y_pred.extend(y_view)
+            
 
         return np.asarray(y_pred)
 

@@ -2,11 +2,11 @@ from torch import nn
 
 
 class EnergyModel(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, input_size):
         super().__init__()
         hyperparam_config = config['hyperparams']
         self.lstm = nn.LSTM(
-            input_size=hyperparam_config['input_size'],
+            input_size=input_size,
             hidden_size=hyperparam_config['hidden_size'],
             num_layers=hyperparam_config['num_layers'],
             batch_first=hyperparam_config['batch_first']

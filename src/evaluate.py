@@ -11,7 +11,6 @@ import pandas as pd
 import torch
 
 from matplotlib import pyplot as plt
-from torch import nn
 
 from src.baselines import NaiveSeasonalForecast
 from src.data_processing import get_data_loader
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 device = setup_device()
 
 
-def get_skill_score(config, hours, y_test, valid_segments, model_loss):
+def get_skill_score(hours, y_test, valid_segments, model_loss):
     diffs_per_segment = []
     start_offsets = np.concatenate([[0], np.cumsum(valid_segments)[:-1]])
 
@@ -37,12 +36,12 @@ def get_skill_score(config, hours, y_test, valid_segments, model_loss):
     return 1 - model_loss / persistence_rmse
 
 
-def log_metrics(config, y_test, y_pred, test_segments, mwh_rmse_loss):
+def log_metrics(y_test, y_pred, test_segments, mwh_rmse_loss):
     mae = np.mean(np.abs(y_test - y_pred))
     mape = np.mean(np.abs(y_test - y_pred) / np.abs(y_test)) * 100
     r2 = 1 - np.mean((y_test - y_pred) ** 2) / np.var(y_test)
-    lag1h = get_skill_score(config, 1, y_test, test_segments, mwh_rmse_loss)
-    lag24h = get_skill_score(config, 24, y_test, test_segments, mwh_rmse_loss)
+    lag1h = get_skill_score(1, y_test, test_segments, mwh_rmse_loss)
+    lag24h = get_skill_score(24, y_test, test_segments, mwh_rmse_loss)
     
     logger.info(f'RMSE error={mwh_rmse_loss.item():.3f}MWh')
     logger.info(f'MAE:{mae:.3f}MWh')
@@ -97,7 +96,7 @@ def get_middle_segment_week(valid_segments):
     return start, end
 
 
-def get_worst_week_start(config, y_test, y_pred, valid_segments):
+def get_worst_week_start(y_test, y_pred, valid_segments):
     start_offsets = np.concatenate([[0], np.cumsum(valid_segments)[:-1]])
     weekly_data = []
 
@@ -108,13 +107,13 @@ def get_worst_week_start(config, y_test, y_pred, valid_segments):
             mae = np.mean(np.abs(y_test[i:i+168] - y_pred[i:i+168]))
             weekly_data.append((mae, i))
 
-    max_week = np.argmax(weekly_data, axis=0)
+    max_week = max(weekly_data)
     _, worst_start = weekly_data[max_week[0]]
 
     return worst_start
 
 
-def get_holiday_week_mask(dates,):
+def get_holiday_week_mask(dates):
     year = pd.DatetimeIndex(dates).year.unique()
     ro_holidays = holidays.country_holidays('RO', years=year)
     holiday = ro_holidays.get_named('Christmas')[0]
@@ -127,9 +126,10 @@ def get_holiday_week_mask(dates,):
 
 def plot_week_data(config, dates, y_test, y_pred, y_naive, valid_segments):
     fig, axs = plt.subplots(3, figsize=(8, 8))
+    fig.tight_layout()
 
     start, end = get_middle_segment_week(valid_segments)
-    worst_start = get_worst_week_start(config, y_test, y_pred, valid_segments)
+    worst_start = get_worst_week_start(y_test, y_pred, valid_segments)
     holidays_mask = get_holiday_week_mask(dates)
 
     y_test_week = y_test[start:end]
@@ -137,7 +137,6 @@ def plot_week_data(config, dates, y_test, y_pred, y_naive, valid_segments):
     y_naive_week = y_naive[start:end]
     dates_week = dates[start:end]
 
-    fig.tight_layout()
     axs[0].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
     axs[0].plot(dates_week, y_test_week, label='Expected')
     axs[0].plot(dates_week, y_pred_week, label='LSTM')
@@ -167,67 +166,72 @@ def plot_week_data(config, dates, y_test, y_pred, y_naive, valid_segments):
     plt.close()
 
 
+def get_valid_counts(config, y, segments):
+    valid_counts = []
+
+    window_total = config['hyperparams']['lookback'] + config['hyperparams']['forecast_horizon']
+    window_lengths = [segment - window_total + 1 for segment in segments]
+    start_offsets = np.concatenate([[0], np.cumsum(window_lengths)[:-1]])
+    for start, length in zip(start_offsets, window_lengths):
+        chunk = y[start:start+length]
+        valid_counts.append(np.count_nonzero(~np.isnan(chunk)))
+
+    return valid_counts
+
 def evaluate(config):
-    model_path = config['data_paths']['model']
-    model = EnergyModel(config)
-    model.load_state_dict(torch.load(model_path, weights_only=True))
-    model.to(device)
-    model.eval()
-
-    loss_fn = nn.MSELoss()
-
     test_data = joblib.load(config['data_paths']['test_data'])
     target_scaler = joblib.load(config['data_paths']['target_scaler'])
     test_loader = get_data_loader(config, test_data)
 
+    model_path = config['data_paths']['model']
+    model = EnergyModel(config, test_data[0].shape[1])
+    model.load_state_dict(torch.load(model_path, weights_only=True))
+    model.to(device)
+    model.eval()
+
+
     predictions = []
     labels_y = []
-    test_loss = 0
 
     with torch.no_grad():
         for X_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
             hypothesis = model(X_batch)
-            loss = loss_fn(hypothesis, y_batch)
-            test_loss += loss.item() * X_batch.shape[0]
 
             predictions.append(hypothesis)
             labels_y.append(y_batch)
 
-    scaled_rmse_loss = np.sqrt(test_loss / len(test_loader.dataset))
-    logger.info(f'RMSE={scaled_rmse_loss:.3f}')
-
     y_test = torch.cat(labels_y).cpu().numpy()
     y_pred = torch.cat(predictions).cpu().numpy()
-
-    y_test = target_scaler.inverse_transform(y_test)
-    y_pred = target_scaler.inverse_transform(y_pred)
-    mwh_rmse_loss = target_scaler.scale_ * scaled_rmse_loss
 
     naive_model = NaiveSeasonalForecast(config, test_data[2])
     y_naive = naive_model.predict(test_data[1])
     y_naive = target_scaler.inverse_transform(y_naive)
 
     valid_mask = np.isfinite(y_naive)
-    valid_counts = []
-
-    window_total = config['hyperparams']['lookback'] + config['hyperparams']['forecast_horizon']
-    window_lengths = [segment - window_total + 1 for segment in test_data[2]]
-    start_offsets = np.concatenate([[0], np.cumsum(window_lengths)[:-1]])
-    for start, length in zip(start_offsets, window_lengths):
-        chunk = y_naive[start:start+length]
-        valid_counts.append(np.count_nonzero(~np.isnan(chunk)))
+    valid_counts = get_valid_counts(config, y_naive, test_data[2])
 
     y_naive = y_naive[~np.isnan(y_naive)]
 
-    y_test = y_test[valid_mask]
-    y_pred = y_pred[valid_mask]
+    y_test = y_test[valid_mask].reshape(-1, 1)
+    y_pred = y_pred[valid_mask].reshape(-1, 1)
+
+    scaled_rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
+    logger.info(f'RMSE(scaled)={scaled_rmse_loss:.3f}')
+
+    y_test = target_scaler.inverse_transform(y_test)
+    y_pred = target_scaler.inverse_transform(y_pred)
+
+    y_test = y_test.ravel()
+    y_pred = y_pred.ravel()
+
+    mwh_rmse_loss = target_scaler.scale_ * scaled_rmse_loss
     mwh_rmse_loss_naive = np.sqrt(np.mean((y_naive - y_test) ** 2))
 
-    log_metrics(config, y_test, y_pred, valid_counts, mwh_rmse_loss)
+    log_metrics(y_test, y_pred, valid_counts, mwh_rmse_loss)
     logger.info('Naive model')
-    log_metrics(config, y_test, y_naive, valid_counts, mwh_rmse_loss_naive)
+    log_metrics(y_test, y_naive, valid_counts, mwh_rmse_loss_naive)
 
     valid_mask = valid_mask.squeeze()
     dates = test_data[3]
