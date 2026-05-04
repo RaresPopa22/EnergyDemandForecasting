@@ -11,20 +11,23 @@ class NaiveSeasonalForecast():
 
     def predict(self, y):
         y_pred = []
+
         
         for start, length in zip(self.start_offsets, self.segments):
-            if self.m > length:
+            view_end = start + length - self.m
+
+            if self.m >= length or self.lookback >= length or start + self.forecast > view_end or self.lookback + self.forecast > length:
                 y_temp = np.array([[np.nan] * self.forecast] * (length - self.forecast + 1))
                 y_pred.extend(y_temp[self.lookback:])
                 continue
             
-            view_end = start + length - self.m
             if self.lookback < self.m:
                 view_start = start
                 warm_up = np.full((self.m - self.lookback, self.forecast), np.nan)
-                y_view = np.concat((warm_up, sliding_window_view(y[view_start:view_end], self.forecast)), axis=0)
-            else:
+                y_view = np.concatenate((warm_up, sliding_window_view(y[view_start:view_end], self.forecast)), axis=0)
+            else:   
                 view_start = start + self.lookback - self.m
+                print(f'start={view_start} and end={view_end}')
                 y_view = sliding_window_view(y[view_start:view_end], self.forecast)
 
             y_pred.extend(y_view)

@@ -108,7 +108,8 @@ def get_worst_week_start(y_test, y_pred, valid_segments):
             weekly_data.append((mae, i))
 
     max_week = max(weekly_data)
-    _, worst_start = weekly_data[max_week[0]]
+    max_week_idx = weekly_data.index(max_week)
+    _, worst_start = weekly_data[max_week_idx]
 
     return worst_start
 
@@ -124,7 +125,7 @@ def get_holiday_week_mask(dates):
     return dates_mask
     
 
-def plot_week_data(config, dates, y_test, y_pred, y_naive, valid_segments):
+def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
     fig, axs = plt.subplots(3, figsize=(8, 8))
     fig.tight_layout()
 
@@ -238,7 +239,7 @@ def evaluate(config):
     dates = dates[valid_mask]
     
     plot_overall_result(config, dates, y_test, y_pred, y_naive)
-    plot_week_data(config, dates, y_test, y_pred, y_naive, valid_counts)
+    plot_week_data(dates, y_test, y_pred, y_naive, valid_counts)
 
 
 if __name__ == '__main__':

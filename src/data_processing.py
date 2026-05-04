@@ -1,6 +1,5 @@
 import math
 from pathlib import Path
-import random
 
 import holidays
 import numpy as np
