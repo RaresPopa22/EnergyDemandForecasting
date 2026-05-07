@@ -11,8 +11,9 @@ from torch.utils.data import Dataset, DataLoader
 
 
 class CustomDataset(Dataset):
-    def __init__(self, features, targets, lookback, segment_lengths, forecast_horizon):
+    def __init__(self, features, future_features, targets, lookback, segment_lengths, forecast_horizon):
         self.X = torch.tensor(features, dtype=torch.float32)
+        self.X_future = torch.tensor(future_features, dtype=torch.float32)
         self.y = torch.tensor(targets, dtype=torch.float32)
         self.lookback = lookback
         self.forecast_horizon = forecast_horizon
@@ -32,9 +33,10 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         start = self.valid_starts[idx]
         X = self.X[start:start + self.lookback]
+        X_future = self.X_future[start + self.lookback:start + self.lookback + self.forecast_horizon]
         y = self.y[start + self.lookback:start + self.lookback + self.forecast_horizon]
 
-        return X, y
+        return X, X_future, y
 
 
 def get_df(config):
@@ -111,6 +113,7 @@ def process_df(config):
 def get_train_eval_test_df(config):
     df, segment_lengths, date_utc = process_df(config)
     X = df.drop('Value', axis=1)
+    temp_idx = X.columns.get_loc(config['data']['columns']['temp'])
     y= df[['Value']]
 
     test_size = config['data']['split']['test_size']
@@ -146,7 +149,9 @@ def get_train_eval_test_df(config):
 
     test_slice_start, test_slice_end = test_slices[0][0], test_slices[-1][1]
     X_test, y_test = X.iloc[test_slice_start: test_slice_end], y.iloc[test_slice_start: test_slice_end]
-    date_utc_test = [date_utc[start + config['hyperparams']['lookback']:end] for start, end in test_slices]
+    lookback = config['hyperparams']['lookback']
+    forecast_horizon = config['hyperparams']['forecast_horizon']
+    date_utc_test = [date_utc[start + lookback:end - forecast_horizon + 1] for start, end in test_slices]
     date_utc_test = pd.concat(date_utc_test)
     test_segment_lengths = [stop - start for start, stop in test_slices]
 
@@ -159,14 +164,19 @@ def get_train_eval_test_df(config):
     y_train = target_scaler.fit_transform(y_train)
     y_test = target_scaler.transform(y_test)
     y_eval = target_scaler.transform(y_eval)
+
+    # get rid of the temp column
+    X_train_future = np.delete(X_train, temp_idx, 1)
+    X_test_future = np.delete(X_test, temp_idx, 1)
+    X_eval_future = np.delete(X_eval, temp_idx, 1)
     
     X_train = np.column_stack([X_train, y_train])
     X_test = np.column_stack([X_test, y_test])
     X_eval = np.column_stack([X_eval, y_eval])
 
-    train_tuple = (X_train, y_train.squeeze(), train_segment_lengths)
-    eval_tuple = (X_eval, y_eval.squeeze(), eval_segment_lengths)
-    test_tuple = (X_test, y_test.squeeze(), test_segment_lengths, date_utc_test)
+    train_tuple = (X_train, X_train_future, y_train.squeeze(), train_segment_lengths)
+    eval_tuple = (X_eval, X_eval_future, y_eval.squeeze(), eval_segment_lengths)
+    test_tuple = (X_test, X_test_future, y_test.squeeze(), test_segment_lengths, date_utc_test)
 
     return train_tuple, eval_tuple, test_tuple, scaler, target_scaler
 
@@ -175,8 +185,9 @@ def get_data_loader(config, data_tuple):
     batch_size = config['hyperparams']['batch_size']
     lookback = config['hyperparams']['lookback']
     forecast_horizon = config['hyperparams']['forecast_horizon']
+    X_train, X_train_future, y_train, train_segment_lengths = data_tuple
 
-    custom_dataset = CustomDataset(data_tuple[0], data_tuple[1], lookback, data_tuple[2], forecast_horizon)
+    custom_dataset = CustomDataset(X_train, X_train_future, y_train, lookback, train_segment_lengths, forecast_horizon)
 
     return DataLoader(
         custom_dataset, 

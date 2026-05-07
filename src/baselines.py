@@ -27,7 +27,6 @@ class NaiveSeasonalForecast():
                 y_view = np.concatenate((warm_up, sliding_window_view(y[view_start:view_end], self.forecast)), axis=0)
             else:   
                 view_start = start + self.lookback - self.m
-                print(f'start={view_start} and end={view_end}')
                 y_view = sliding_window_view(y[view_start:view_end], self.forecast)
 
             y_pred.extend(y_view)

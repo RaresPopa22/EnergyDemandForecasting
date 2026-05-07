@@ -1,4 +1,6 @@
 import os
+
+from src.seq2seq import Decoder, Encoder, Seq2SeqLSTM
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:2'
 
 import argparse
@@ -40,7 +42,14 @@ def train(config):
     train_tuple, eval_tuple, test_tuple, scaler, target_scaler = get_train_eval_test_df(config)
     train_loader = get_data_loader(config, train_tuple)
     eval_loader = get_data_loader(config, eval_tuple)
-    model = EnergyModel(config, train_tuple[0].shape[1]).to(device)
+
+    input_size = train_tuple[0].shape[1]
+
+    decoder_input = train_tuple[1].shape[1] + 1
+    encoder = Encoder(config, input_size)
+    decoder = Decoder(config, decoder_input)
+    model = Seq2SeqLSTM(config, encoder, decoder).to(device)
+
     optimizer = optim.AdamW(model.parameters(), lr=hparam_config['lr'], weight_decay=hparam_config['weight_decay'])
     lr_scheduler = CosineAnnealingLR(optimizer, T_max=hparam_config['T_max'], eta_min=hparam_config['eta_min'])
     loss_fn = nn.MSELoss()
@@ -59,12 +68,13 @@ def train(config):
 
         model.train()
         training_loss = 0
-        for X_batch, y_batch in train_loader:
+        for X_batch, X_future_batch, y_batch in train_loader:
             X_batch = X_batch.to(device)
+            X_future_batch = X_future_batch.to(device)
             y_batch = y_batch.to(device)
 
             optimizer.zero_grad()
-            y_pred = model(X_batch)
+            y_pred = model(X_batch, X_future_batch, y_batch, hparam_config['teacher_forcing_ratio'])
             loss = loss_fn(y_pred, y_batch)
             training_loss += loss.data * X_batch.shape[0]
             loss.backward()
@@ -78,11 +88,12 @@ def train(config):
         model.eval()
         eval_loss = 0
         with torch.no_grad():
-            for X_batch, y_batch in eval_loader:
+            for X_batch, X_future_batch, y_batch in eval_loader:
                 X_batch = X_batch.to(device)
+                X_future_batch = X_future_batch.to(device)
                 y_batch = y_batch.to(device)
 
-                y_pred = model(X_batch)
+                y_pred = model(X_batch, X_future_batch)
                 loss = loss_fn(y_pred, y_batch)
                 eval_loss += loss.data * X_batch.shape[0]
 

@@ -8,13 +8,15 @@ data:
   split:
     test_size: .15
     eval_size: .15
+  columns:
+    temp: temperature_2m
 
 hyperparams:
   epochs: 1000
   patience: 50
-  lookback: 24
-  forecast_horizon: 1
-  batch_size: 512
+  lookback: 168
+  forecast_horizon: 24
+  batch_size: 64
   input_size: 11
   hidden_size: 75
   dropout: .2
@@ -26,6 +28,7 @@ hyperparams:
   T_max: 200
   eta_min: .00001
   max_norm: 1
+  teacher_forcing_ratio: .5
 
 plot:
   window: 168

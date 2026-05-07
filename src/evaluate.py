@@ -7,6 +7,7 @@ import holidays
 import joblib
 import matplotlib.dates as mdates
 import numpy as np
+import numpy.ma as ma
 import pandas as pd
 import torch
 
@@ -174,7 +175,7 @@ def get_valid_counts(config, y, segments):
     window_lengths = [segment - window_total + 1 for segment in segments]
     start_offsets = np.concatenate([[0], np.cumsum(window_lengths)[:-1]])
     for start, length in zip(start_offsets, window_lengths):
-        chunk = y[start:start+length]
+        chunk = y[start:start+length, 0]
         valid_counts.append(np.count_nonzero(~np.isnan(chunk)))
 
     return valid_counts
@@ -208,15 +209,14 @@ def evaluate(config):
 
     naive_model = NaiveSeasonalForecast(config, test_data[2])
     y_naive = naive_model.predict(test_data[1])
+
     y_naive = target_scaler.inverse_transform(y_naive)
 
-    valid_mask = np.isfinite(y_naive)
+    valid_mask = np.isnan(y_naive)
+    dates_valid_mask = ~np.isnan(y_naive[:, 0])
     valid_counts = get_valid_counts(config, y_naive, test_data[2])
 
-    y_naive = y_naive[~np.isnan(y_naive)]
-
-    y_test = y_test[valid_mask].reshape(-1, 1)
-    y_pred = y_pred[valid_mask].reshape(-1, 1)
+    y_naive = ma.masked_array(y_naive, mask=valid_mask)
 
     scaled_rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
     logger.info(f'RMSE(scaled)={scaled_rmse_loss:.3f}')
@@ -224,22 +224,21 @@ def evaluate(config):
     y_test = target_scaler.inverse_transform(y_test)
     y_pred = target_scaler.inverse_transform(y_pred)
 
-    y_test = y_test.ravel()
-    y_pred = y_pred.ravel()
-
     mwh_rmse_loss = target_scaler.scale_ * scaled_rmse_loss
     mwh_rmse_loss_naive = np.sqrt(np.mean((y_naive - y_test) ** 2))
 
-    log_metrics(y_test, y_pred, valid_counts, mwh_rmse_loss)
-    logger.info('Naive model')
-    log_metrics(y_test, y_naive, valid_counts, mwh_rmse_loss_naive)
+    y_test = ma.masked_array(y_test, mask=valid_mask)
+    y_pred = ma.masked_array(y_pred, mask=valid_mask)
 
-    valid_mask = valid_mask.squeeze()
-    dates = test_data[3]
-    dates = dates[valid_mask]
+    log_metrics(y_test[:, 0], y_pred[:, 0], valid_counts, mwh_rmse_loss)
+    logger.info('Naive model')
+    log_metrics(y_test[:, 0], y_naive[:, 0], valid_counts, mwh_rmse_loss_naive)
     
-    plot_overall_result(config, dates, y_test, y_pred, y_naive)
-    plot_week_data(dates, y_test, y_pred, y_naive, valid_counts)
+    dates = test_data[3]
+    dates = dates[dates_valid_mask]
+    
+    plot_overall_result(config, dates, y_test[:, 0], y_pred[:, 0], y_naive[:, 0])
+    plot_week_data(dates, y_test[:, 0], y_pred[:, 0], y_naive[:, 0], valid_counts)
 
 
 if __name__ == '__main__':
