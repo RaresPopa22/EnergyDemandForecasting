@@ -15,7 +15,7 @@ from matplotlib import pyplot as plt
 
 from src.baselines import NaiveSeasonalForecast
 from src.data_processing import get_data_loader
-from src.model import EnergyModel
+from src.seq2seq import Decoder, Encoder, Seq2SeqLSTM
 from src.utils import read_configs, setup_device
 
 
@@ -151,18 +151,20 @@ def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
     dates_worst_week = dates[worst_start: worst_start + 168]
 
     axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
-    axs[1].plot(dates_worst_week, y_test_worst_week)
-    axs[1].plot(dates_worst_week, y_pred_worst_week)
+    axs[1].plot(dates_worst_week, y_test_worst_week, label='Expected')
+    axs[1].plot(dates_worst_week, y_pred_worst_week, label='Predicted - LSTM')
     axs[1].set_title('Worst Week')
+    axs[1].legend()
 
     y_test_holiday = y_test[holidays_mask]
     y_pred_holiday = y_pred[holidays_mask]
     dates_holiday = dates[holidays_mask]
 
     axs[2].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
-    axs[2].plot(dates_holiday, y_test_holiday)
-    axs[2].plot(dates_holiday, y_pred_holiday)
+    axs[2].plot(dates_holiday, y_test_holiday, label='Expected')
+    axs[2].plot(dates_holiday, y_pred_holiday, label='Predicted - LSTM')
     axs[2].set_title('Holiday Week')
+    axs[2].legend()
 
     plt.savefig('outputs/evaluation_weekly.png')
     plt.close()
@@ -186,7 +188,12 @@ def evaluate(config):
     test_loader = get_data_loader(config, test_data)
 
     model_path = config['data_paths']['model']
-    model = EnergyModel(config, test_data[0].shape[1])
+
+    input_size = test_data[0].shape[1]
+    decoder_input = test_data[1].shape[1] + 1
+    encoder = Encoder(config, input_size)
+    decoder = Decoder(config, decoder_input)
+    model = Seq2SeqLSTM(config, encoder, decoder).to(device)
     model.load_state_dict(torch.load(model_path, weights_only=True))
     model.to(device)
     model.eval()
@@ -196,10 +203,11 @@ def evaluate(config):
     labels_y = []
 
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
+        for X_batch, X_future_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
+            X_future_batch = X_future_batch.to(device)
             y_batch = y_batch.to(device)
-            hypothesis = model(X_batch)
+            hypothesis = model(X_batch, X_future_batch)
 
             predictions.append(hypothesis)
             labels_y.append(y_batch)
@@ -207,16 +215,20 @@ def evaluate(config):
     y_test = torch.cat(labels_y).cpu().numpy()
     y_pred = torch.cat(predictions).cpu().numpy()
 
-    naive_model = NaiveSeasonalForecast(config, test_data[2])
-    y_naive = naive_model.predict(test_data[1])
+    test_segments = test_data[3]
+    naive_model = NaiveSeasonalForecast(config, test_segments)
+    y_naive = naive_model.predict(test_data[2])
 
     y_naive = target_scaler.inverse_transform(y_naive)
 
     valid_mask = np.isnan(y_naive)
     dates_valid_mask = ~np.isnan(y_naive[:, 0])
-    valid_counts = get_valid_counts(config, y_naive, test_data[2])
+    valid_counts = get_valid_counts(config, y_naive, test_segments)
 
     y_naive = ma.masked_array(y_naive, mask=valid_mask)
+
+    y_test = ma.masked_array(y_test, mask=valid_mask)
+    y_pred = ma.masked_array(y_pred, mask=valid_mask)
 
     scaled_rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
     logger.info(f'RMSE(scaled)={scaled_rmse_loss:.3f}')
@@ -227,14 +239,11 @@ def evaluate(config):
     mwh_rmse_loss = target_scaler.scale_ * scaled_rmse_loss
     mwh_rmse_loss_naive = np.sqrt(np.mean((y_naive - y_test) ** 2))
 
-    y_test = ma.masked_array(y_test, mask=valid_mask)
-    y_pred = ma.masked_array(y_pred, mask=valid_mask)
-
     log_metrics(y_test[:, 0], y_pred[:, 0], valid_counts, mwh_rmse_loss)
     logger.info('Naive model')
     log_metrics(y_test[:, 0], y_naive[:, 0], valid_counts, mwh_rmse_loss_naive)
     
-    dates = test_data[3]
+    dates = test_data[4]
     dates = dates[dates_valid_mask]
     
     plot_overall_result(config, dates, y_test[:, 0], y_pred[:, 0], y_naive[:, 0])

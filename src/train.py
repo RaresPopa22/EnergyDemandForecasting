@@ -46,6 +46,7 @@ def train(config):
     input_size = train_tuple[0].shape[1]
 
     decoder_input = train_tuple[1].shape[1] + 1
+
     encoder = Encoder(config, input_size)
     decoder = Decoder(config, decoder_input)
     model = Seq2SeqLSTM(config, encoder, decoder).to(device)

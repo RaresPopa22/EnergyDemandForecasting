@@ -185,9 +185,8 @@ def get_data_loader(config, data_tuple):
     batch_size = config['hyperparams']['batch_size']
     lookback = config['hyperparams']['lookback']
     forecast_horizon = config['hyperparams']['forecast_horizon']
-    X_train, X_train_future, y_train, train_segment_lengths = data_tuple
 
-    custom_dataset = CustomDataset(X_train, X_train_future, y_train, lookback, train_segment_lengths, forecast_horizon)
+    custom_dataset = CustomDataset(data_tuple[0], data_tuple[1], data_tuple[2], lookback, data_tuple[3], forecast_horizon)
 
     return DataLoader(
         custom_dataset, 
