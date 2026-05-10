@@ -37,14 +37,20 @@ def get_skill_score(hours, y_test, valid_segments, model_loss):
     return 1 - model_loss / persistence_rmse
 
 
-def log_metrics(y_test, y_pred, test_segments, mwh_rmse_loss):
+def log_metrics(y_test, y_pred, test_segments):
     mae = np.mean(np.abs(y_test - y_pred))
     mape = np.mean(np.abs(y_test - y_pred) / np.abs(y_test)) * 100
     r2 = 1 - np.mean((y_test - y_pred) ** 2) / np.var(y_test)
-    lag1h = get_skill_score(1, y_test, test_segments, mwh_rmse_loss)
-    lag24h = get_skill_score(24, y_test, test_segments, mwh_rmse_loss)
+
+    hour_rmse_loss = np.sqrt(np.mean((y_pred[:, 0] - y_test[:, 0]) ** 2))
+    day_rmse_loss = np.sqrt(np.mean((y_pred[:, -1] - y_test[:, -1]) ** 2))
+
+    lag1h = get_skill_score(1, y_test, test_segments, hour_rmse_loss)
+    lag24h = get_skill_score(24, y_test, test_segments, day_rmse_loss)
+
+    rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
     
-    logger.info(f'RMSE error={mwh_rmse_loss.item():.3f}MWh')
+    logger.info(f'RMSE error={rmse_loss.item():.3f}MWh')
     logger.info(f'MAE:{mae:.3f}MWh')
     logger.info(f'MAPE:{mape:.3f}%')
     logger.info(f'R2:{r2:.3f}')
@@ -55,25 +61,25 @@ def log_metrics(y_test, y_pred, test_segments, mwh_rmse_loss):
 def plot_overall_result(config, dates, y_test, y_pred, y_naive):
     fig, axs = plt.subplots(3, figsize=(8, 8))
 
-    lim = np.percentile(np.abs(y_test - y_pred), 99)
+    lim = np.percentile(np.abs(y_test[:, -1] - y_pred[:, -1]), 99)
     axs[0].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
     axs[0].set_ylim(-lim, lim)
-    axs[0].plot(dates, y_test - y_pred)
+    axs[0].plot(dates, y_test[:, -1] - y_pred[:, -1])
     axs[0].set_title('Residual')
     
-    axs[1].scatter(y_test, y_pred, c='b', alpha=.1)
+    axs[1].scatter(y_test[:, -1], y_pred[:, -1], c='b', alpha=.1)
     axs[1].set_xlabel('y_test')
     axs[1].set_ylabel('y_pred')
     axs[1].axline((0, 0 ), slope=1)
     axs[1].set_title('Calibration')
 
-    errors = np.abs(y_test - y_pred).ravel()
+    errors = np.abs(y_test[:, 0] - y_pred[:, 0]).ravel()
     rolling_mae = pd.Series(errors).rolling(window=config['plot']['window']).mean()
     
-    naive_errors = np.abs(y_test - y_naive).ravel()
+    naive_errors = np.abs(y_test[:, 0] - y_naive[:, 0]).ravel()
     naive_rolling_mae = pd.Series(naive_errors).rolling(window=config['plot']['window']).mean()
     axs[2].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
-    axs[2].plot(dates, rolling_mae, label='LSTM')
+    axs[2].plot(dates, rolling_mae, label='Seq2Seq')
     axs[2].plot(dates, naive_rolling_mae, label='Naive')
     axs[2].set_title('Rolling MAE')
     axs[2].legend()
@@ -127,10 +133,19 @@ def get_holiday_week_mask(dates):
     
 
 def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
-    fig, axs = plt.subplots(3, figsize=(8, 8))
+    fig, axs = plt.subplots(4, figsize=(8, 8))
     fig.tight_layout()
-
     start, end = get_middle_segment_week(valid_segments)
+
+    fan_out_start = range(start, start + 7*24 , 24)
+    y_test_day = y_test[fan_out_start, :]
+    y_pred_day = y_pred[fan_out_start, :]
+    dates_day = dates[start:start+24*7]
+
+    y_test = y_test[:, 0]
+    y_pred = y_pred[:, 0]
+    y_naive = y_naive[:, 0]
+
     worst_start = get_worst_week_start(y_test, y_pred, valid_segments)
     holidays_mask = get_holiday_week_mask(dates)
 
@@ -141,7 +156,7 @@ def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
 
     axs[0].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
     axs[0].plot(dates_week, y_test_week, label='Expected')
-    axs[0].plot(dates_week, y_pred_week, label='LSTM')
+    axs[0].plot(dates_week, y_pred_week, label='Seq2Seq')
     axs[0].plot(dates_week, y_naive_week, label='Naive')
     axs[0].set_title('Weekly data')
     axs[0].legend()
@@ -152,7 +167,7 @@ def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
 
     axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
     axs[1].plot(dates_worst_week, y_test_worst_week, label='Expected')
-    axs[1].plot(dates_worst_week, y_pred_worst_week, label='Predicted - LSTM')
+    axs[1].plot(dates_worst_week, y_pred_worst_week, label='Predicted - Seq2Seq')
     axs[1].set_title('Worst Week')
     axs[1].legend()
 
@@ -162,9 +177,19 @@ def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
 
     axs[2].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
     axs[2].plot(dates_holiday, y_test_holiday, label='Expected')
-    axs[2].plot(dates_holiday, y_pred_holiday, label='Predicted - LSTM')
+    axs[2].plot(dates_holiday, y_pred_holiday, label='Predicted - Seq2Seq')
     axs[2].set_title('Holiday Week')
     axs[2].legend()
+
+    axs[3].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
+
+    for i in range(len(y_test_day)):
+        axs[3].plot(dates_day[24*i:24*i+24], y_test_day[i, :], c='b', linewidth=2)
+        axs[3].plot(dates_day[24*i:24*i+24], y_pred_day[i, :], c='r')
+        axs[3].axvline(dates_day.iloc[24*i+23], c='orange')
+    
+    axs[3].legend(['Expected', 'Predicted - Seq2Seq'])
+    axs[3].set_title('Fan out')
 
     plt.savefig('outputs/evaluation_weekly.png')
     plt.close()
@@ -236,18 +261,16 @@ def evaluate(config):
     y_test = target_scaler.inverse_transform(y_test)
     y_pred = target_scaler.inverse_transform(y_pred)
 
-    mwh_rmse_loss = target_scaler.scale_ * scaled_rmse_loss
-    mwh_rmse_loss_naive = np.sqrt(np.mean((y_naive - y_test) ** 2))
 
-    log_metrics(y_test[:, 0], y_pred[:, 0], valid_counts, mwh_rmse_loss)
+    log_metrics(y_test, y_pred, valid_counts)
     logger.info('Naive model')
-    log_metrics(y_test[:, 0], y_naive[:, 0], valid_counts, mwh_rmse_loss_naive)
+    log_metrics(y_test, y_naive, valid_counts)
     
     dates = test_data[4]
     dates = dates[dates_valid_mask]
     
-    plot_overall_result(config, dates, y_test[:, 0], y_pred[:, 0], y_naive[:, 0])
-    plot_week_data(dates, y_test[:, 0], y_pred[:, 0], y_naive[:, 0], valid_counts)
+    plot_overall_result(config, dates, y_test, y_pred, y_naive)
+    plot_week_data(dates, y_test, y_pred, y_naive, valid_counts)
 
 
 if __name__ == '__main__':
