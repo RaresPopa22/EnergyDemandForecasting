@@ -1,0 +1,23 @@
+model:
+  name: xgboost
+
+data_paths:
+  model: 'models/xgboost.joblib'
+  X_test: 'data/xgboost_X_test.csv'
+  y_test: 'data/xgboost_y_test.csv'
+  test_segments: 'data/xgboost_segments.joblib'
+
+data:
+  split:
+    test_size: .15
+    eval_size: .15
+  columns:
+    temp: temperature_2m
+
+hyperparams:
+  forecast_horizon: 24
+  lookback: 4
+  model:
+    n_estimators: 1000
+    learning_rate: 0.025
+    max_depth: 6

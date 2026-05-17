@@ -1,8 +1,8 @@
 model:
-  name: lstm
+  name: seq2seq
 
 data_paths:
-  model: 'models/lstm.pt'
+  model: 'models/seq2seq.pt'
   scaler: 'models/scaler.joblib'
   target_scaler: 'models/target_scaler.joblib'
   test_data: 'models/test_data.joblib'
@@ -22,7 +22,6 @@ hyperparams:
   batch_size: 64
   input_size: 11
   hidden_size: 75
-  dropout: .2
   num_layers: 1
   batch_first: True
   num_workers: 0
@@ -31,6 +30,7 @@ hyperparams:
   T_max: 200
   eta_min: .00001
   max_norm: 1
+  teacher_forcing_ratio: .5
 
 plot:
   window: 168

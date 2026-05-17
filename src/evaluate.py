@@ -1,7 +1,5 @@
 import argparse
-from datetime import timedelta
 import logging
-from pathlib import Path
 
 import holidays
 import joblib
@@ -11,12 +9,16 @@ import numpy.ma as ma
 import pandas as pd
 import torch
 
+from datetime import timedelta
+from pathlib import Path
 from matplotlib import pyplot as plt
 
 from src.baselines import NaiveSeasonalForecast
 from src.data_processing import get_data_loader
+from src.model import EnergyModel
 from src.seq2seq import Decoder, Encoder, Seq2SeqLSTM
-from src.utils import read_configs, setup_device
+from src.utils import deep_merge, read_config, read_configs, setup_device
+from sklearn.metrics import root_mean_squared_error
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ def get_skill_score(hours, y_test, valid_segments, model_loss):
     return 1 - model_loss / persistence_rmse
 
 
-def log_metrics(y_test, y_pred, test_segments):
+def log_metrics(y_test, y_pred, test_segments, model_name):
     mae = np.mean(np.abs(y_test - y_pred))
     mape = np.mean(np.abs(y_test - y_pred) / np.abs(y_test)) * 100
     r2 = 1 - np.mean((y_test - y_pred) ** 2) / np.var(y_test)
@@ -50,6 +52,7 @@ def log_metrics(y_test, y_pred, test_segments):
 
     rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
     
+    logger.info(f'\nLogging metrics for {model_name}')
     logger.info(f'RMSE error={rmse_loss.item():.3f}MWh')
     logger.info(f'MAE:{mae:.3f}MWh')
     logger.info(f'MAPE:{mape:.3f}%')
@@ -58,7 +61,7 @@ def log_metrics(y_test, y_pred, test_segments):
     logger.info(f'Skill score for 24h is: {lag24h.item():.3f}')
 
 
-def plot_overall_result(config, dates, y_test, y_pred, y_naive):
+def plot_overall_result(config, dates, y_test, y_pred, y_naive, horizon):
     fig, axs = plt.subplots(3, figsize=(8, 8))
 
     lim = np.percentile(np.abs(y_test[:, -1] - y_pred[:, -1]), 99)
@@ -85,7 +88,7 @@ def plot_overall_result(config, dates, y_test, y_pred, y_naive):
     axs[2].legend()
 
     fig.tight_layout()
-    plt.savefig('outputs/evaluation_overall.png')
+    plt.savefig(f'outputs/evaluation_overall_{horizon}h.png')
     plt.close()
 
 
@@ -132,18 +135,20 @@ def get_holiday_week_mask(dates):
     return dates_mask
     
 
-def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
+def plot_week_data(dates, y_preds, y_test, valid_segments, horizon):
     fig, axs = plt.subplots(4, figsize=(8, 8))
     fig.tight_layout()
     start, end = get_middle_segment_week(valid_segments)
 
     fan_out_start = range(start, start + 7*24 , 24)
+    y_pred = y_preds['seq2seq']
     y_test_day = y_test[fan_out_start, :]
     y_pred_day = y_pred[fan_out_start, :]
     dates_day = dates[start:start+24*7]
 
     y_test = y_test[:, 0]
     y_pred = y_pred[:, 0]
+    y_naive = y_preds['naive']
     y_naive = y_naive[:, 0]
 
     worst_start = get_worst_week_start(y_test, y_pred, valid_segments)
@@ -152,12 +157,14 @@ def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
     y_test_week = y_test[start:end]
     y_pred_week = y_pred[start:end]
     y_naive_week = y_naive[start:end]
+    y_tree_week = y_tree[start:end]
     dates_week = dates[start:end]
 
     axs[0].xaxis.set_major_formatter(mdates.DateFormatter('%d-%m-%y'))
     axs[0].plot(dates_week, y_test_week, label='Expected')
-    axs[0].plot(dates_week, y_pred_week, label='Seq2Seq')
-    axs[0].plot(dates_week, y_naive_week, label='Naive')
+
+    for model_name, pred in y_preds.items():
+        axs[0].plot(dates_week, pred, label=f'{model_name}')
     axs[0].set_title('Weekly data')
     axs[0].legend()
 
@@ -191,7 +198,7 @@ def plot_week_data(dates, y_test, y_pred, y_naive, valid_segments):
     axs[3].legend(['Expected', 'Predicted - Seq2Seq'])
     axs[3].set_title('Fan out')
 
-    plt.savefig('outputs/evaluation_weekly.png')
+    plt.savefig(f'outputs/evaluation_weekly_{horizon}h.png')
     plt.close()
 
 
@@ -207,22 +214,26 @@ def get_valid_counts(config, y, segments):
 
     return valid_counts
 
-def evaluate(config):
+def evaluate_sequence_models(config):
+    model_name = config['model']['name']
     test_data = joblib.load(config['data_paths']['test_data'])
-    target_scaler = joblib.load(config['data_paths']['target_scaler'])
     test_loader = get_data_loader(config, test_data)
-
-    model_path = config['data_paths']['model']
-
     input_size = test_data[0].shape[1]
-    decoder_input = test_data[1].shape[1] + 1
-    encoder = Encoder(config, input_size)
-    decoder = Decoder(config, decoder_input)
-    model = Seq2SeqLSTM(config, encoder, decoder).to(device)
+
+    if model_name == 'lstm':
+        model = EnergyModel(config, input_size).to(device)
+    elif model_name == 'seq2seq':
+        decoder_input = test_data[1].shape[1] + 1
+        encoder = Encoder(config, input_size)
+        decoder = Decoder(config, decoder_input)
+        model = Seq2SeqLSTM(config, encoder, decoder).to(device)
+    else:
+        raise ValueError(f'Unknown sequence model. Available models=[lstm, seq2seq]. Requested={model_name}')    
+    
+    model_path = config['data_paths']['model']
     model.load_state_dict(torch.load(model_path, weights_only=True))
     model.to(device)
     model.eval()
-
 
     predictions = []
     labels_y = []
@@ -230,9 +241,15 @@ def evaluate(config):
     with torch.no_grad():
         for X_batch, X_future_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
-            X_future_batch = X_future_batch.to(device)
             y_batch = y_batch.to(device)
-            hypothesis = model(X_batch, X_future_batch)
+
+            if model_name == 'lstm':
+                hypothesis = model(X_batch)
+            elif model_name == 'seq2seq':
+                X_future_batch = X_future_batch.to(device)
+                hypothesis = model(X_batch, X_future_batch)
+            else:
+                raise ValueError(f'Unknown model: {model_name}')
 
             predictions.append(hypothesis)
             labels_y.append(y_batch)
@@ -240,45 +257,127 @@ def evaluate(config):
     y_test = torch.cat(labels_y).cpu().numpy()
     y_pred = torch.cat(predictions).cpu().numpy()
 
-    test_segments = test_data[3]
-    naive_model = NaiveSeasonalForecast(config, test_segments)
-    y_naive = naive_model.predict(test_data[2])
+    return y_pred, y_test, test_data
 
+
+def evaluate_tree_models(config):
+    X_test = pd.read_csv(config['data_paths']['X_test'])
+    y_test = pd.read_csv(config['data_paths']['y_test'])
+    segments = joblib.load(config['data_paths']['test_segments'])
+    
+    model = joblib.load(config['data_paths']['model'])
+    
+    y_pred = model.predict(X_test)
+    
+    return np.asarray(y_pred), np.asarray(y_test), segments
+
+
+def evaluate_naive(config, y_test, segments, target_scaler):
+    naive_model = NaiveSeasonalForecast(config, segments)
+    y_naive = naive_model.predict(y_test)
     y_naive = target_scaler.inverse_transform(y_naive)
 
     valid_mask = np.isnan(y_naive)
     dates_valid_mask = ~np.isnan(y_naive[:, 0])
-    valid_counts = get_valid_counts(config, y_naive, test_segments)
+    valid_counts = get_valid_counts(config, y_naive, segments)
+
+    return y_naive, valid_mask, dates_valid_mask, valid_counts
+
+
+def process_ys(config, predict_dict, y_test, y_pred, target_scaler, test_data, model_name):
+    if 'naive' not in predict_dict:
+        y_naive, valid_mask, dates_valid_mask, valid_counts = evaluate_naive(config, test_data[2], test_data[3], target_scaler)
+        predict_dict['naive'] = {
+            'y_pred': y_naive,
+            'valid_mask': valid_mask,
+            'dates_valid_mask': dates_valid_mask,
+            'valid_counts': valid_counts
+        }
+    else:
+        y_naive = predict_dict['naive']['y_pred']
+        valid_mask = predict_dict['naive']['valid_mask']
+        dates_valid_mask = predict_dict['naive']['dates_valid_mask']
+        valid_counts = predict_dict['naive']['valid_counts']
 
     y_naive = ma.masked_array(y_naive, mask=valid_mask)
-
-    y_test = ma.masked_array(y_test, mask=valid_mask)
-    y_pred = ma.masked_array(y_pred, mask=valid_mask)
+    y_test = ma.masked_array(y_test, valid_mask)
+    y_pred = ma.masked_array(y_pred, valid_mask)
 
     scaled_rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
-    logger.info(f'RMSE(scaled)={scaled_rmse_loss:.3f}')
+    logger.info(f'{model_name}: RMSE(scaled)={scaled_rmse_loss:.3f}')
 
     y_test = target_scaler.inverse_transform(y_test)
     y_pred = target_scaler.inverse_transform(y_pred)
 
+    return y_test, y_pred, y_naive, valid_counts, dates_valid_mask
 
-    log_metrics(y_test, y_pred, valid_counts)
-    logger.info('Naive model')
-    log_metrics(y_test, y_naive, valid_counts)
+
+def predict(configs):
+    predict_dict = {}
+    base_config = {}
+
+    for config in configs:
+        model_name = config['model']['name']
+        if model_name == 'xgboost':
+            y_pred, y_test, segments = evaluate_tree_models(config)
+
+            predict_dict[model_name] = {
+                'y_pred': y_pred,
+                'y_test': y_test,
+                'valid_counts': segments
+            }
+        elif model_name == 'seq2seq':
+            base_config.update(config)
+            y_pred, y_test, test_data = evaluate_sequence_models(config)
+            target_scaler = joblib.load(config['data_paths']['target_scaler'])
+            y_test, y_pred, y_naive, valid_counts, dates_valid_mask = process_ys(config, predict_dict, y_test, y_pred, target_scaler, test_data, model_name)
+
+            predict_dict[model_name] = {
+                'y_pred': y_pred,
+                'y_test': y_test,
+                'valid_counts': valid_counts,
+                'segments': test_data[3],
+                'target_scaler': target_scaler,
+                'dates': test_data[4]
+            }
+
+            predict_dict['naive'] = {
+                'y_pred': y_naive,
+                'y_test': y_test,
+                'valid_counts': valid_counts
+            }
+        elif model_name == 'lstm':
+            y_pred, y_test, test_data = evaluate_sequence_models(config)
+            target_scaler = joblib.load(config['data_paths']['target_scaler'])
+            y_test, y_pred, y_naive, valid_counts, dates_valid_mask = process_ys(config, predict_dict, y_test, y_pred, target_scaler, test_data, model_name)
+
+            predict_dict[model_name] = {
+                'y_pred': y_pred,
+                'y_test': y_test,
+                'valid_counts': valid_counts
+            }
+        else:
+            raise ValueError(f'Unknown model. Available sequence models=[lstm, seq2seq, xgboost]. Requested={model_name}')
+
+    for model, values in predict_dict.items():
+        log_metrics(values['y_test'], values['y_pred'], values['valid_counts'], model)
     
-    dates = test_data[4]
-    dates = dates[dates_valid_mask]
-    
-    plot_overall_result(config, dates, y_test, y_pred, y_naive)
-    plot_week_data(dates, y_test, y_pred, y_naive, valid_counts)
+    # dates = predict_dict['seq2seq']['dates']
+    # dates = dates[predict_dict['naive']['dates_valid_mask']]
+    # plot_overall_result(base_config, dates, seq2seq_y_test, seq2seq_y_pred, y_naive, naive_config['hyperparams']['forecast_horizon'])
+
+    # y_preds = {model_name:model_dict['y_pred'] for model_name, model_dict in predict_dict.items()}
+    # plot_week_data(dates, y_preds, predict_dict['seq2seq']['test'], valid_counts, naive_config['hyperparams']['forecast_horizon'])
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Model evaluation stage")
-    parser.add_argument('--config', required=True, help='Path to the model`s configuration file')
+    parser.add_argument('--configs', nargs='+', required=True, help='Path to the model`s configuration file')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
     base_path = Path(__file__).parent.parent / 'config' / 'base.yaml'
-    config = read_configs(base_path, args.config)
-    evaluate(config)
+    base_config = read_config(base_path)
+    configs = [deep_merge(base_config, read_config(c)) for c in args.configs]
+
+    predict(configs)

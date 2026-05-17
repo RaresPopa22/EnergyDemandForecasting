@@ -1,13 +1,14 @@
 import math
-from pathlib import Path
 
 import holidays
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 
+from pathlib import Path
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from torch.utils.data import Dataset, DataLoader
+from pandas import concat
 
 
 class CustomDataset(Dataset):
@@ -110,12 +111,7 @@ def process_df(config):
     return df, segment_lengths, date_utc
 
 
-def get_train_eval_test_df(config):
-    df, segment_lengths, date_utc = process_df(config)
-    X = df.drop('Value', axis=1)
-    temp_idx = X.columns.get_loc(config['data']['columns']['temp'])
-    y= df[['Value']]
-
+def train_eval_test_split(config, X, y, segment_lengths, date_utc=None):
     test_size = config['data']['split']['test_size']
     eval_size = config['data']['split']['eval_size']
     train_target = math.floor(len(X) * (1 - eval_size - test_size))
@@ -137,7 +133,6 @@ def get_train_eval_test_df(config):
             eval_slices.append((start, exclusive_end))
         else:
             test_slices.append((start, exclusive_end))
-        
 
     train_slice_start, train_slice_end = train_slices[0][0], train_slices[-1][1]
     X_train, y_train = X.iloc[train_slice_start: train_slice_end], y.iloc[train_slice_start: train_slice_end]
@@ -149,11 +144,33 @@ def get_train_eval_test_df(config):
 
     test_slice_start, test_slice_end = test_slices[0][0], test_slices[-1][1]
     X_test, y_test = X.iloc[test_slice_start: test_slice_end], y.iloc[test_slice_start: test_slice_end]
-    lookback = config['hyperparams']['lookback']
-    forecast_horizon = config['hyperparams']['forecast_horizon']
-    date_utc_test = [date_utc[start + lookback:end - forecast_horizon + 1] for start, end in test_slices]
-    date_utc_test = pd.concat(date_utc_test)
     test_segment_lengths = [stop - start for start, stop in test_slices]
+
+    train_tuple = (X_train, y_train, train_segment_lengths)
+    eval_tuple = (X_eval, y_eval, eval_segment_lengths)
+
+    if date_utc is not None:
+        lookback = config['hyperparams']['lookback']
+        forecast_horizon = config['hyperparams']['forecast_horizon']
+        date_utc_test = [date_utc[start + lookback:end - forecast_horizon + 1] for start, end in test_slices]
+        date_utc_test = pd.concat(date_utc_test)
+        test_tuple = (X_test, y_test, test_segment_lengths, date_utc_test)
+    else:
+        test_tuple = (X_test, y_test, test_segment_lengths)
+
+    return train_tuple, eval_tuple, test_tuple 
+
+
+def get_train_eval_test_df(config):
+    df, segment_lengths, date_utc = process_df(config)
+    X = df.drop('Value', axis=1)
+    temp_idx = X.columns.get_loc(config['data']['columns']['temp'])
+    y= df[['Value']]
+
+    train_tuple, eval_tuple, test_tuple = train_eval_test_split(config, X, y, segment_lengths, date_utc)
+    X_train, y_train, train_segment_lengths = train_tuple
+    X_eval, y_eval, eval_segment_lengths = eval_tuple
+    X_test, y_test, test_segment_lengths, date_utc_test = test_tuple
 
     scaler = MinMaxScaler()
     X_train = scaler.fit_transform(X_train)
@@ -193,3 +210,52 @@ def get_data_loader(config, data_tuple):
         batch_size,
         num_workers=config['hyperparams']['num_workers']
         )
+
+
+def process_tree_df(config, df, segment_lengths):
+    horizon = config['hyperparams']['forecast_horizon']
+    lookback = config['hyperparams']['lookback']
+
+    X = df
+    X_future = df.drop(config['data']['columns']['temp'], axis=1)
+    y = df['Value']
+    segments_df = []
+    start_offsets = np.concatenate([[0], np.cumsum(segment_lengths)[:-1]])
+    new_segment_lengths = []
+
+    for i, (start, length) in enumerate(zip(start_offsets, segment_lengths)):
+        cols = []
+        end = start + length
+        for i in range(lookback, -1, -1):
+            cols.append(X[start:end].add_suffix(f'_t_minus_{i}', axis=1).shift(i))
+
+        for i in range(1, horizon+1):
+            cols.append(X_future[start:end].add_suffix(f'_t_plus_{i}', axis=1).shift(i))
+
+        for i in range(1, horizon+1):
+            cols.append(y[start:end].rename(f'Value_plus_t{i}').shift(-i))
+
+        segment_df_with_nan = pd.concat(cols, axis=1)
+        segment_df_without_nan = segment_df_with_nan.dropna()
+
+        new_segment_lengths.append(length - (len(segment_df_with_nan) - len(segment_df_without_nan)))
+
+        segments_df.append(segment_df_without_nan)
+
+    df = pd.concat(segments_df, axis=0)
+
+    return df, new_segment_lengths
+
+
+def get_data_for_tree_model(config):
+    df = get_df(config)
+    df = feature_engineer(df)
+    df, segment_lengths = segment_dataframe(config, df)
+    df= df.drop('DateUTC', axis=1)
+    df, segment_lengths = process_tree_df(config, df, segment_lengths)
+
+    horizon = config['hyperparams']['forecast_horizon']
+    X, y = df.iloc[:, :-horizon], df.iloc[:, -horizon:]
+    train_tuple, eval_tuple, test_tuple = train_eval_test_split(config, X, y, segment_lengths, date_utc=None)
+    
+    return train_tuple, eval_tuple, test_tuple

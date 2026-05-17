@@ -9,3 +9,5 @@ seed: 1
 
 naive:
   m: 168
+
+sequence_models: ['lstm', 'seq2seq']
