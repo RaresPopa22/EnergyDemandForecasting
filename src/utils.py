@@ -54,8 +54,6 @@ def set_random_seeds(config):
 
 
 def get_skill_score(hours, y_test, valid_segments, model_loss):
-    print(f'y_test={len(y_test)}')
-    print(f'valid_segments={valid_segments}')
     diffs_per_segment = []
     start_offsets = np.concatenate([[0], np.cumsum(valid_segments)[:-1]])
 
