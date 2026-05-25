@@ -214,11 +214,11 @@ def predict(configs):
         predict_dict['seq2seq']['dates'], 
         predict_dict['seq2seq']['y_test'], 
         predict_dict['seq2seq']['y_pred'], 
-        predict_dict['naive']['y_test'],
+        predict_dict['naive']['y_pred'],
         base_config['hyperparams']['forecast_horizon']
         )
 
-    y_preds = {model_name:model_dict['y_pred'] for model_name, model_dict in predict_dict.items()}
+    y_preds = {model_name:model_dict['y_pred'] for model_name, model_dict in predict_dict.items() if model_name not in ('lstm', 'xgboost')}
     plot_week_data(
         predict_dict['seq2seq']['dates'], 
         y_preds,

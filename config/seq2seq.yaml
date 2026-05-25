@@ -20,7 +20,6 @@ hyperparams:
   lookback: 168
   forecast_horizon: 24
   batch_size: 64
-  input_size: 11
   hidden_size: 75
   num_layers: 1
   batch_first: True
