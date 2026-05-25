@@ -79,7 +79,7 @@ def feature_engineer(df):
     date_min = df['DateUTC'].min()
     date_max_value = (df['DateUTC'].max() - date_min).total_seconds()
 
-    df['trend'] = (df['DateUTC'] - date_min).dt.total_seconds() / date_max_value
+    # df['trend'] = (df['DateUTC'] - date_min).dt.total_seconds() / date_max_value
 
     return df
     
@@ -111,7 +111,7 @@ def process_df(config):
     return df, segment_lengths, date_utc
 
 
-def train_eval_test_split(config, X, y, segment_lengths, date_utc=None):
+def train_eval_test_split(config, X, y, segment_lengths, date_utc, is_tree=False):
     test_size = config['data']['split']['test_size']
     eval_size = config['data']['split']['eval_size']
     train_target = math.floor(len(X) * (1 - eval_size - test_size))
@@ -148,15 +148,18 @@ def train_eval_test_split(config, X, y, segment_lengths, date_utc=None):
 
     train_tuple = (X_train, y_train, train_segment_lengths)
     eval_tuple = (X_eval, y_eval, eval_segment_lengths)
-
-    if date_utc is not None:
-        lookback = config['hyperparams']['lookback']
+    
+    if is_tree:
         forecast_horizon = config['hyperparams']['forecast_horizon']
-        date_utc_test = [date_utc[start + lookback:end - forecast_horizon + 1] for start, end in test_slices]
+        date_utc_test = [date_utc.iloc[start:end] for start, end in test_slices]
         date_utc_test = pd.concat(date_utc_test)
         test_tuple = (X_test, y_test, test_segment_lengths, date_utc_test)
     else:
-        test_tuple = (X_test, y_test, test_segment_lengths)
+        lookback = config['hyperparams']['lookback']
+        forecast_horizon = config['hyperparams']['forecast_horizon']
+        date_utc_test = [date_utc.iloc[start + lookback:end - forecast_horizon + 1] for start, end in test_slices]
+        date_utc_test = pd.concat(date_utc_test)
+        test_tuple = (X_test, y_test, test_segment_lengths, date_utc_test)
 
     return train_tuple, eval_tuple, test_tuple 
 
@@ -217,20 +220,20 @@ def process_tree_df(config, df, segment_lengths):
     lookback = config['hyperparams']['lookback']
 
     X = df
-    X_future = df.drop(config['data']['columns']['temp'], axis=1)
+    X_future = df.drop([config['data']['columns']['temp'], 'Value'], axis=1)
     y = df['Value']
     segments_df = []
     start_offsets = np.concatenate([[0], np.cumsum(segment_lengths)[:-1]])
     new_segment_lengths = []
 
-    for i, (start, length) in enumerate(zip(start_offsets, segment_lengths)):
+    for start, length in zip(start_offsets, segment_lengths):
         cols = []
         end = start + length
         for i in range(lookback, -1, -1):
             cols.append(X[start:end].add_suffix(f'_t_minus_{i}', axis=1).shift(i))
 
         for i in range(1, horizon+1):
-            cols.append(X_future[start:end].add_suffix(f'_t_plus_{i}', axis=1).shift(i))
+            cols.append(X_future[start:end].add_suffix(f'_t_plus_{i}', axis=1).shift(-i))
 
         for i in range(1, horizon+1):
             cols.append(y[start:end].rename(f'Value_plus_t{i}').shift(-i))
@@ -249,13 +252,16 @@ def process_tree_df(config, df, segment_lengths):
 
 def get_data_for_tree_model(config):
     df = get_df(config)
-    df = feature_engineer(df)
     df, segment_lengths = segment_dataframe(config, df)
+    df = feature_engineer(df)
+    date_utc = df['DateUTC']
     df= df.drop('DateUTC', axis=1)
     df, segment_lengths = process_tree_df(config, df, segment_lengths)
+    date_utc = date_utc[date_utc.index.isin(df.index)]
+    date_utc = date_utc + pd.Timedelta(hours=1)
 
     horizon = config['hyperparams']['forecast_horizon']
     X, y = df.iloc[:, :-horizon], df.iloc[:, -horizon:]
-    train_tuple, eval_tuple, test_tuple = train_eval_test_split(config, X, y, segment_lengths, date_utc=None)
+    train_tuple, eval_tuple, test_tuple = train_eval_test_split(config, X, y, segment_lengths, date_utc, True)
     
     return train_tuple, eval_tuple, test_tuple

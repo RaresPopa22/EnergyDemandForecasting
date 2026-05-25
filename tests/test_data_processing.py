@@ -26,9 +26,6 @@ class TestDataProcessing:
         
         easter = df.loc[df['DateUTC'].dt.normalize() == "2025-04-20"]
         assert (easter['is_holiday'] == 1).all()
-        
-        assert not df['trend'].isnull().values.any()
-        assert df['trend'].is_monotonic_increasing
 
 
     def test_segment_dataframe(self, sample_config, sample_gap_data):

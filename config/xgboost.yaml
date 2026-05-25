@@ -3,9 +3,8 @@ model:
 
 data_paths:
   model: 'models/xgboost.joblib'
-  X_test: 'data/xgboost_X_test.csv'
-  y_test: 'data/xgboost_y_test.csv'
-  test_segments: 'data/xgboost_segments.joblib'
+  test_data: 'models/xgboost_test_data.joblib'
+  target_scaler: 'models/target_scaler.joblib'
 
 data:
   split:
@@ -15,8 +14,11 @@ data:
     temp: temperature_2m
 
 hyperparams:
+  sequence_models:
+    lookback: 168
+    forecast_horizon: 24
   forecast_horizon: 24
-  lookback: 4
+  lookback: 24
   model:
     n_estimators: 1000
     learning_rate: 0.025

@@ -55,11 +55,7 @@ def train_tree_model(config):
     logger.info(f'XGBoost RMSE={error}') # target_scaler=[1052.60945979]
 
     joblib.dump(model, config['data_paths']['model'])
-    
-    X_test, y_test, test_segment_lengths = test
-    X_test.to_csv(config['data_paths']['X_test'], index=False)
-    y_test.to_csv(config['data_paths']['y_test'], index=False)
-    joblib.dump(test_segment_lengths, config['data_paths']['test_segments'])
+    joblib.dump(test, config['data_paths']['test_data'])
 
 
 def train_sequence_model(config):
