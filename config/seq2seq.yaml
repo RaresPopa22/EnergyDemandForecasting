@@ -29,7 +29,8 @@ hyperparams:
   T_max: 200
   eta_min: .00001
   max_norm: 1
-  teacher_forcing_ratio: .5
+  teacher_forcing_start: .5
+  teacher_forcing_decay_epochs: 50
 
 plot:
   window: 168

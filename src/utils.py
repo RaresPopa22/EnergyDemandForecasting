@@ -6,8 +6,25 @@ import yaml
 import matplotlib.dates as mdates
 from datetime import timedelta
 import holidays
+import random
 
 from matplotlib import pyplot as plt
+from typing import NamedTuple
+
+class SequenceData(NamedTuple):
+    X: np.ndarray
+    X_future: np.ndarray
+    y: np.ndarray
+    segment_lengths: list[int]
+    dates: pd.Series
+
+
+class BaseData(NamedTuple):
+    X: pd.DataFrame
+    y: pd.DataFrame
+    segment_lengths: list[int]
+    dates: pd.Series
+
 
 def read_config(path):
     with open(path, 'r') as f:
@@ -48,21 +65,22 @@ def setup_device():
 def set_random_seeds(config):
     seed = config['seed']
     np.random.seed(seed)
+    random.seed(seed)
     torch.manual_seed(seed)
     torch.use_deterministic_algorithms(True)
 
 
 
-def get_skill_score(hours, y_test, valid_segments, model_loss):
+def get_skill_score(hours, y_test, test_segments, model_loss):
     diffs_per_segment = []
-    start_offsets = np.concatenate([[0], np.cumsum(valid_segments)[:-1]])
+    start_offsets = np.concatenate([[0], np.cumsum(test_segments)[:-1]])
 
-    for offset, length in zip(start_offsets, valid_segments):
+    for offset, length in zip(start_offsets, test_segments):
         y_t_idxs = range(offset + hours, offset + length)
         y_t_1_idxs = range(offset, offset + length-hours)
         diffs_per_segment.append(y_test[y_t_idxs] - y_test[y_t_1_idxs])
 
-    diffs = np.concatenate(diffs_per_segment).squeeze()
+    diffs = np.ma.concatenate(diffs_per_segment).squeeze()
     persistence_rmse = np.sqrt(np.mean(diffs ** 2))
     return 1 - model_loss / persistence_rmse
 
@@ -206,22 +224,11 @@ def plot_week_data(dates, y_preds, y_test, valid_segments, horizon):
     plt.close()
 
 
-def get_valid_counts(y, segments):
-    valid_counts = []
-
-    start_offsets = np.concatenate([[0], np.cumsum(segments)[:-1]])
-    for start, length in zip(start_offsets, segments):
-        chunk = y[start:start+length, 0]
-        valid_counts.append(np.count_nonzero(~np.isnan(chunk)))
-
-    return valid_counts
-
-
 def get_common_timestamps(configs):
     timestamps = []
     for config in configs:
         test_data = joblib.load(config['data_paths']['test_data'])
-        timestamps.append(test_data[-1])
+        timestamps.append(test_data.dates)
 
     common_timestamps = sorted(set.intersection(*map(set, timestamps)))
     return common_timestamps
@@ -230,6 +237,11 @@ def get_common_timestamps(configs):
 def slice_targets(y_pred, y_test, dates, common_timestamps):
     common_idxs = pd.DatetimeIndex(dates).get_indexer(common_timestamps)
     return y_pred[common_idxs, :], y_test[common_idxs, :]
+
+
+def slice_dates(dates, common_timestamps):
+    common_idxs = pd.DatetimeIndex(dates).get_indexer(common_timestamps)
+    return dates.iloc[common_idxs]
 
 
 def compute_segments_for_naive(dates, common_timestamps):

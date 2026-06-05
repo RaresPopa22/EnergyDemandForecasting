@@ -6,6 +6,7 @@ import numpy as np
 import numpy.ma as ma
 import pandas as pd
 import torch
+import copy
 
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from src.baselines import NaiveSeasonalForecast
 from src.data_processing import get_data_loader
 from src.model import EnergyModel
 from src.seq2seq import Decoder, Encoder, Seq2SeqLSTM
-from src.utils import compute_segments_for_naive, deep_merge, get_common_timestamps, get_skill_score, get_valid_counts, plot_overall_result, plot_week_data, read_config, setup_device, slice_targets
+from src.utils import compute_segments_for_naive, deep_merge, get_common_timestamps, get_skill_score, plot_overall_result, plot_week_data, read_config, setup_device, slice_dates, slice_targets
 
 
 logger = logging.getLogger(__name__)
@@ -46,12 +47,12 @@ def evaluate_sequence_models(config):
     model_name = config['model']['name']
     test_data = joblib.load(config['data_paths']['test_data'])
     test_loader = get_data_loader(config, test_data)
-    input_size = test_data[0].shape[1]
+    input_size = test_data.X.shape[1]
 
     if model_name == 'lstm':
         model = EnergyModel(config, input_size).to(device)
     elif model_name == 'seq2seq':
-        decoder_input = test_data[1].shape[1] + 1
+        decoder_input = test_data.X_future.shape[1] + 1
         encoder = Encoder(config, input_size)
         decoder = Decoder(config, decoder_input)
         model = Seq2SeqLSTM(config, encoder, decoder).to(device)
@@ -91,122 +92,119 @@ def evaluate_sequence_models(config):
 def evaluate_tree_models(config):
     test_data = joblib.load(config['data_paths']['test_data'])
     model = joblib.load(config['data_paths']['model'])
-    y_pred = model.predict(test_data[0])
+    y_pred = model.predict(test_data.X)
     
-    return y_pred, np.asarray(test_data[1]), test_data[2], test_data[3]
+    return y_pred, np.asarray(test_data.y), test_data.dates
 
 
 def evaluate_naive(config, test_data, common_timestamps, target_scaler):
-    common_idxs = pd.DatetimeIndex(test_data[-1]).get_indexer(common_timestamps)
-    naive_model = NaiveSeasonalForecast(config, test_data[3])
-    y_naive = naive_model.predict(test_data[2])
+    common_idxs = pd.DatetimeIndex(test_data.dates).get_indexer(common_timestamps)
+    naive_model = NaiveSeasonalForecast(config, test_data.segment_lengths)
+    y_naive = naive_model.predict(test_data.y)
     y_naive = y_naive[common_idxs]
     y_naive = target_scaler.inverse_transform(y_naive)
 
     valid_mask = np.isnan(y_naive)
-    dates_valid_mask = ~np.isnan(y_naive[:, 0])
-    segments = compute_segments_for_naive(test_data[-1], common_timestamps)
-    valid_counts = get_valid_counts(y_naive, segments)
+    segments = compute_segments_for_naive(test_data.dates, common_timestamps)
 
-    return y_naive, valid_mask, dates_valid_mask, valid_counts
+    return y_naive, valid_mask, segments
 
 
-def process_ys(config, predict_dict, y_test, y_pred, target_scaler, test_data, common_timestamps, model_name):
-    if 'naive' not in predict_dict:
-        y_naive, valid_mask, dates_valid_mask, valid_counts = evaluate_naive(config, test_data, common_timestamps, target_scaler)
-        predict_dict['naive'] = {
-            'y_pred': y_naive,
-            'valid_mask': valid_mask,
-            'dates_valid_mask': dates_valid_mask,
-            'valid_counts': valid_counts
-        }
-    else:
-        y_naive = predict_dict['naive']['y_pred']
-        valid_mask = predict_dict['naive']['valid_mask']
-        dates_valid_mask = predict_dict['naive']['dates_valid_mask']
-        valid_counts = predict_dict['naive']['valid_counts']
+def process_ys(predict_dict, y_pred, y_test, target_scaler, model_name):
+    valid_mask = predict_dict['naive']['valid_mask']
 
-    y_naive = ma.masked_array(y_naive, mask=valid_mask)
-    y_test = ma.masked_array(y_test, valid_mask)
+    if model_name in ['lstm', 'seq2seq']:
+        y_diff = ma.masked_array(y_pred - y_test, valid_mask)
+        scaled_rmse_loss = np.sqrt(np.mean(y_diff ** 2))
+        logger.info(f'{model_name}: RMSE(scaled)={scaled_rmse_loss:.3f}')
+        y_pred = target_scaler.inverse_transform(y_pred)
+        y_test = target_scaler.inverse_transform(y_test)
+    
     y_pred = ma.masked_array(y_pred, valid_mask)
+    y_test = ma.masked_array(y_test, valid_mask)
 
-    scaled_rmse_loss = np.sqrt(np.mean((y_pred - y_test) ** 2))
-    logger.info(f'{model_name}: RMSE(scaled)={scaled_rmse_loss:.3f}')
+    return y_pred, y_test
 
-    y_pred = target_scaler.inverse_transform(y_pred)
-    y_test = target_scaler.inverse_transform(y_test)
 
-    return y_pred, y_test, valid_counts, dates_valid_mask
+def predict_naive(config, target_scaler, common_timestamps):
+    test_data = joblib.load(config['data_paths']['test_data'])
+    y_naive, valid_mask, segments = evaluate_naive(config, test_data, common_timestamps, target_scaler)
+    
+    return y_naive, valid_mask, segments
 
 
 def predict(configs):
     predict_dict = {}
-    common_timestamps = get_common_timestamps(configs)
     base_config = {}
+    common_timestamps = get_common_timestamps(configs)
+
+    for config in configs:
+        model_name = config['model']['name']
+        if model_name == 'seq2seq':
+            base_config = copy.deepcopy(config)
+
+    target_scaler = joblib.load(base_config['data_paths']['target_scaler'])
 
     if len(common_timestamps) == 0:
         raise ValueError(f'No common timestamps were found.')
+
+    
+    y_naive, valid_mask, segments = predict_naive(base_config, target_scaler, common_timestamps)
+    predict_dict['naive'] = {
+            'y_pred': ma.masked_array(y_naive, valid_mask),
+            'valid_mask': valid_mask,
+            'segments': segments
+        }
     
     for config in configs:
         model_name = config['model']['name']
         if model_name == 'xgboost':
-            if 'valid_mask' not in predict_dict['naive'] and 'valid_counts' not in predict_dict['naive']:
-                raise ValueError(f'XGBoost model was passed as first config. Please use it as last')
-
-            y_pred, y_test, _, dates = evaluate_tree_models(config)
+            y_pred, y_test, dates = evaluate_tree_models(config)
             y_pred, y_test = slice_targets(y_pred, y_test, dates, common_timestamps)
-
-            valid_mask = predict_dict['naive']['valid_mask']
-            y_test = ma.masked_array(y_test, valid_mask)
-            y_pred = ma.masked_array(y_pred, valid_mask)
+            y_pred, y_test = process_ys(predict_dict, y_pred, y_test, target_scaler, model_name)
 
             predict_dict[model_name] = {
                 'y_pred': y_pred,
                 'y_test': y_test,
-                'valid_counts': predict_dict['naive']['valid_counts']
+                'segments': segments
             }
             
         elif model_name == 'seq2seq':
-            base_config = config.copy()
             y_pred, y_test, test_data = evaluate_sequence_models(config)
-            target_scaler = joblib.load(config['data_paths']['target_scaler'])
-            y_pred, y_test = slice_targets(y_pred, y_test, test_data[-1], common_timestamps)
-            y_pred, y_test, valid_counts, dates_valid_mask = process_ys(
-                config, predict_dict, y_test, y_pred, target_scaler, test_data, common_timestamps, model_name
-                )
-            dates = test_data[-1]
-            dates = dates[dates_valid_mask]
-
+            y_pred, y_test = slice_targets(y_pred, y_test, test_data.dates, common_timestamps)
+            y_pred, y_test = process_ys(predict_dict, y_pred, y_test, target_scaler, model_name)
+            
+            dates = slice_dates(test_data.dates, common_timestamps)
             predict_dict[model_name] = {
                 'y_pred': y_pred,
                 'y_test': y_test,
-                'target_scaler': target_scaler,
-                'valid_counts': valid_counts,
+                'segments': segments,
                 'dates': dates,
                 'forecast_horizon': config['hyperparams']['forecast_horizon']
             }
 
-            predict_dict['naive']['y_test'] = y_test
+            if 'y_test' not in predict_dict['naive']:
+                predict_dict['naive']['y_test'] = y_test
+
         elif model_name == 'lstm':
             y_pred, y_test, test_data = evaluate_sequence_models(config)
-            target_scaler = joblib.load(config['data_paths']['target_scaler'])
-            y_pred, y_test = slice_targets(y_pred, y_test, test_data[-1], common_timestamps)
-            y_pred, y_test, valid_counts, dates_valid_mask = process_ys(
-                config, predict_dict, y_test, y_pred, target_scaler, test_data, common_timestamps, model_name
-                )
+            y_pred, y_test = slice_targets(y_pred, y_test, test_data.dates, common_timestamps)
+            y_pred, y_test = process_ys(predict_dict, y_pred, y_test, target_scaler, model_name)
 
             predict_dict[model_name] = {
                 'y_pred': y_pred,
                 'y_test': y_test,
-                'valid_counts': valid_counts
+                'segments': segments
             }
-            predict_dict['naive']['y_test'] = y_test
+
+            if 'y_test' not in predict_dict['naive']:
+                predict_dict['naive']['y_test'] = y_test
         else:
             raise ValueError(f'Unknown model. Available sequence models=[lstm, seq2seq, xgboost]. Requested={model_name}')
 
 
     for model, values in predict_dict.items():
-        log_metrics(values['y_test'], values['y_pred'], values['valid_counts'], model)
+        log_metrics(values['y_test'], values['y_pred'], values['segments'], model)
     
 
     plot_overall_result(
@@ -223,7 +221,7 @@ def predict(configs):
         predict_dict['seq2seq']['dates'], 
         y_preds,
         predict_dict['seq2seq']['y_test'], 
-        predict_dict['seq2seq']['valid_counts'], 
+        predict_dict['seq2seq']['segments'], 
         base_config['hyperparams']['forecast_horizon']
         )
 

@@ -171,23 +171,27 @@ This project uses YAML files for configuration, making it easy to manage model p
 
 To get an honest estimate of performance, 15% of the data was held out as a test set and never seen during training, so the metrics below reflect behavior on unseen data.
 
+Note: an earlier revision of the split assigned whole contiguous segments to train/eval/test based on where each segment started, which silently shrank the test set to ~10.8% of the data and left it without any winter. The split now cuts segments at the exact 70/85% boundaries, so the test window (Dec 2024 - Dec 2025) is larger and harder, and the numbers below are not comparable with earlier revisions.
+
 The table below summarizes the performance of the trained models:
 
 | Model   | RMSE error (MWh)  | MAE(MWh)      | MAPE(%) | R2 | Skill score for 1h | Skill score for 24h |
 |---------|--------|--------------|----------------|------|-------------------|------------------|
-|  seq2seq  |  387.949 |    288.804   | 5.169 | 0.842 | 0.511 | 0.386 |
-|  naive  |  584.055 |    390.208   | 6.931 | 0.642 | -0.929 | 0.063 |
-|  lstm  |  410.433 |    290.593   | 5.275 | 0.823 | 0.300 | 0.400 |
-|  xgboost  |  351.216 |    233.067   | 4.295 | 0.870 | 0.372 | 0.425 |
+|  seq2seq  |  412.988 |    303.161   | 5.253 | 0.839 | 0.195 | 0.339 |
+|  naive  |  617.692 |    424.380   | 7.217 | 0.639 | -0.993 | 0.005 |
+|  lstm  |  427.589 |    300.830   | 5.271 | 0.827 | 0.284 | 0.402 |
+|  xgboost  |  342.718 |    227.792   | 4.048 | 0.889 | 0.392 | 0.440 |
 
 The skill score is defined as `1 − (model RMSE / persistence RMSE)`, where the persistence baseline simply predicts the value from one step earlier (1h) or 24 hours earlier (24h). A score of 1.0 is perfect, 0 ties the persistence baseline, and a negative value is worse than it, which is why the naive model scores negatively at 1h, where naive 1-hour persistence is very hard to beat.
 
-By skill score, Seq2Seq has a slight edge at the 1h horizon, but at the full 24h horizon XGBoost wins. XGBoost is also the clear winner on RMSE, MAE, and MAPE. Both sequence models comfortably beat the naive baseline.
+On this window XGBoost wins across the board: RMSE, MAE, MAPE, R2, and both skill horizons. Between the sequence models, Seq2Seq (trained with scheduled sampling) has the better overall RMSE, MAE and R2, while LSTM keeps the edge on both skill scores, which only measure the first and last step of the 24h horizon. All three models clearly beat the naive seasonal baseline.
 
-For the Seq2Seq model, the residuals show no obvious pattern, which suggests the model captured the underlying structure of the data. The calibration panel shows a tendency to overestimate. The rolling-MAE panel shows the model staying below the naive seasonal baseline.
+The residual plot does not show a clear pattern, which is good news: the Seq2Seq model has picked up the meaningful underlying structure of the data. The calibration panel shows the misses concentrated in the tails: predictions floor at around 4000 MWh and overestimate whenever actual demand drops below that, while the highest peaks are slightly underestimated. The outliers sit in the lower range. Lastly, the rolling-MAE panel shows the model staying below the naive baseline across the whole year, with the gap reaching up to 5x at the baseline's worst weeks. The March-May stretch is where the model struggles most, with larger fluctuations, and the naive model briefly matches or edges below it a few times over the summer.
 
 ![overall](./outputs/evaluation_overall_24h.png)
 
 In the weekly plot, the fan-out panel is the real story: error grows with the forecast horizon, small in the early steps, widest mid-horizon, then recovering somewhat toward the end.
 
 ![weekly](./outputs/evaluation_weekly_24h.png)
+
+The EDA flagged a downward drift in demand (roughly 14% across 2019-2025) and floated a linear trend index as a feature. I ended up not pursuing it. At a 24h horizon the trend amounts to about 0.4 MWh of drift per prediction window, three orders of magnitude below the daily swings the models actually forecast, and the 168h lookback already hands the sequence models the current demand level in every input window. A monotonically increasing index is also out-of-distribution at test time by construction: with a chronological split, every test value of that feature is larger than anything seen during training.

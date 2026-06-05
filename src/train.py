@@ -44,14 +44,11 @@ def train_tree_model(config):
     train, eval, test = get_data_for_tree_model(config)
 
     model = MultiOutputRegressor(xgb.XGBRegressor(**model_config, random_state=1, eval_metric='rmse'))
-
-    X_train, y_train, _ = train
-    X_eval, y_eval, _ = eval
     
-    model.fit(X_train, y_train)
-    pred = model.predict(X_eval)
+    model.fit(train.X, train.y)
+    pred = model.predict(eval.X)
 
-    error = root_mean_squared_error(y_eval, pred)
+    error = root_mean_squared_error(eval.y, pred)
     logger.info(f'XGBoost RMSE={error}') # target_scaler=[1052.60945979]
 
     joblib.dump(model, config['data_paths']['model'])
@@ -61,13 +58,12 @@ def train_tree_model(config):
 def train_sequence_model(config):
     model_name = config['model']['name']
     hparam_config = config['hyperparams']
-    train_tuple, eval_tuple, test_tuple, scaler, target_scaler = get_train_eval_test_df(config)
-    train_loader = get_data_loader(config, train_tuple)
-    eval_loader = get_data_loader(config, eval_tuple)
+    train_data, eval_data, test_data, scaler, target_scaler = get_train_eval_test_df(config)
+    train_loader = get_data_loader(config, train_data)
+    eval_loader = get_data_loader(config, eval_data)
 
-    input_size = train_tuple[0].shape[1]
-
-    decoder_input = train_tuple[1].shape[1] + 1
+    input_size = train_data.X.shape[1]
+    decoder_input = train_data.X_future.shape[1] + 1
 
     if model_name == 'lstm':
         model = EnergyModel(config, input_size).to(device)
@@ -94,6 +90,11 @@ def train_sequence_model(config):
         if patience > hparam_config['patience']:
             break
 
+        if model_name == 'seq2seq':
+            start = hparam_config['teacher_forcing_start']
+            slope = start / hparam_config['teacher_forcing_decay_epochs']
+            ratio = max(0, start - slope * epoch)
+
         model.train()
         training_loss = 0
         for X_batch, X_future_batch, y_batch in train_loader:
@@ -106,7 +107,7 @@ def train_sequence_model(config):
                 y_pred = model(X_batch)
             elif model_name == 'seq2seq':
                 X_future_batch = X_future_batch.to(device)
-                y_pred = model(X_batch, X_future_batch, y_batch, hparam_config['teacher_forcing_ratio'])
+                y_pred = model(X_batch, X_future_batch, y_batch, ratio)
             else:
                 raise ValueError(f'Unknown model: {model_name}')
 
@@ -153,9 +154,10 @@ def train_sequence_model(config):
 
         if epoch % 50 == 0:
             logger.info(f'Epoch={epoch}. Training loss {training_avg_loss[-1]:.3f}. Eval loss {eval_avg_loss[-1]:.3f}')
+            logger.info(f'Schedule sampling ratio={ratio}')
 
     
-    joblib.dump(test_tuple, config['data_paths']['test_data'])
+    joblib.dump(test_data, config['data_paths']['test_data'])
     joblib.dump(scaler, config['data_paths']['scaler'])
     joblib.dump(target_scaler, config['data_paths']['target_scaler'])
 
